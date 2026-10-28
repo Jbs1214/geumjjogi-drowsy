@@ -1,0 +1,83 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ===== 가상환경 =====
+.venv/
+venv/
+env/
+ENV/
+
+# ===== Jupyter =====
+.ipynb_checkpoints/
+
+# ===== IDE / OS =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ===== 환경변수 / 비밀 =====
+.env
+.env.*
+*.key
+*.pem
+
+# ===== Streamlit =====
+.streamlit/secrets.toml
+
+# ===== 데이터 (얼굴 영상/이미지는 개인정보이므로 커밋 금지) =====
+data/raw/
+data/processed/
+data/*.csv
+data/*.npy
+data/*.npz
+data/*.pkl
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.jpg
+*.jpeg
+*.png
+*.bmp
+!docs/**/*.png
+!docs/**/*.jpg
+!assets/**/*.png
+!assets/**/*.jpg
+
+# ===== 모델 / 학습 산출물 =====
+checkpoints/
+runs/
+logs/
+lightning_logs/
+wandb/
+mlruns/
+tensorboard/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.h5
+*.tflite
+
+# ===== 실험 결과 (필요한 것만 docs/로 옮겨 커밋) =====
+results/
+outputs/
+
+# ===== 임시 파일 =====
+*.log
+*.tmp
+*.bak
