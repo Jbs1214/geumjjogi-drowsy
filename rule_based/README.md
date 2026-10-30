@@ -36,3 +36,5 @@ python -m rule_based.perclos outputs/landmarks/<이름>.csv   # 1초마다 PERCL
 ## 정할 것
 - 얼굴 미검출 프레임 처리: 지금은 NaN이면 감음 구간이 끊긴다. 짧은 끊김을 채울 `MAX_GAP_SEC`를 정한다 (육주영 님 `sequence_model/config.py`의 `FILL_MAX_SEC`와 맞출 것)
 - 졸음 점수: PERCLOS·가장 긴 눈 감김·하품·고개 숙임을 합친 0~100 점수와 정상/주의/졸음 기준
+- 정면 pitch 보정: 정면 pitch가 녹화마다 +1~+9.4로 달라 `PITCH_DOWN`(15)까지 여유가 약 5도뿐이다. 시작할 때 몇 초간 정면 pitch를 재서 빼는 보정을 검토한다 (후속 과제)
+- **데모 전 마지막 확인:** 말할 때 입 벌림이 하품으로 잘못 세지지 않는지 (`MAR_YAWN`, `YAWN_MIN_SEC`). 하품 영상만 녹화했고 말하는 영상은 아직 확인하지 않았다
