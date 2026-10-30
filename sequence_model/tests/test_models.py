@@ -1,9 +1,10 @@
 import unittest
+from unittest import mock
 
 import numpy as np
 import torch
 
-from sequence_model import baseline, config
+from sequence_model import baseline, config, train
 from sequence_model.models import MODEL_NAMES, build_model
 from sequence_model.train import class_weights, next_weight_path
 
@@ -18,6 +19,18 @@ class ModelTest(unittest.TestCase):
     def test_unknown_model(self):
         with self.assertRaises(ValueError):
             build_model("gru", 11, config.N_CLASSES)
+
+
+class RequireGpuTest(unittest.TestCase):
+    def test_stops_without_gpu(self):
+        with mock.patch("torch.cuda.is_available", return_value=False):
+            with self.assertRaises(SystemExit) as caught:
+                train.main(["--model", "cnn1d"])
+        self.assertIn("GPU", str(caught.exception))
+
+    def test_no_device_option(self):
+        with self.assertRaises(SystemExit):
+            train.parse_args(["--model", "cnn1d", "--device", "cpu"])
 
 
 class ClassWeightTest(unittest.TestCase):

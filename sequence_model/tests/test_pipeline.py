@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import torch
 
 from eval import compare
 from sequence_model import config, train
@@ -14,6 +15,7 @@ from sequence_model.tests.synthetic import write_clips
 from sequence_model.windows import build_dataset, window_frames
 
 
+@unittest.skipUnless(torch.cuda.is_available(), "학습은 GPU로만 하므로 GPU가 없으면 건너뛴다")
 class PipelineTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -25,8 +27,7 @@ class PipelineTest(unittest.TestCase):
         cls.calibration.write_text("\n".join(cls.clip_ids[:6]), encoding="utf-8")
         cls.common = ["--labels-dir", str(cls.labels), "--calibration-clips", str(cls.calibration)]
         cls.weights = {
-            name: train.main(["--model", name, *cls.common, "--epochs", "12", "--device", "cpu",
-                              "--out-dir", str(cls.out)])
+            name: train.main(["--model", name, *cls.common, "--epochs", "12", "--out-dir", str(cls.out)])
             for name in ("cnn1d", "lstm")
         }
 

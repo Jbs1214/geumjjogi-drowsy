@@ -56,6 +56,8 @@ python -m unittest discover -t . -s sequence_model/tests    # 테스트
 ```
 학습 점수의 정답은 자동 라벨이라 규칙을 얼마나 따라 배웠는지만 보여 준다. 평가는 `eval/`에서 검수 라벨로 한다.
 
+학습은 GPU로만 한다. GPU가 없으면 `train.py`는 시작하지 않고 멈추며, CPU로 바꾸는 옵션은 없다. 종단 테스트도 GPU가 없으면 건너뛴다. 기준선(scikit-learn)은 GPU를 쓰지 않는다.
+
 ## 실시간 사용
 ```python
 predictor = SeqPredictor(Path("checkpoints/best_model_v01.pt"))

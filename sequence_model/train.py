@@ -16,6 +16,15 @@ from sequence_model import config
 from sequence_model.models import MODEL_NAMES, build_model
 from sequence_model.windows import build_dataset, fit_normalizer, normalize
 
+DEVICE = "cuda"     # 학습은 GPU로만 한다. CPU로 넘어가지 않게 옵션을 두지 않는다
+
+
+def require_gpu() -> None:
+    """GPU가 없으면 학습을 시작하지 않는다."""
+    if not torch.cuda.is_available():
+        raise SystemExit("GPU(CUDA)를 찾지 못했습니다. 학습은 GPU로만 합니다. conda 환경과 PyTorch CUDA 빌드를 확인하세요")
+    print(f"학습 장치: {torch.cuda.get_device_name(0)}")
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="시퀀스 분류기 학습")
@@ -28,7 +37,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--patience", type=int, default=8, help="val macro F1이 이 epoch 수만큼 안 오르면 멈춘다")
     parser.add_argument("--seed", type=int, default=config.SPLIT_SEED)
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--out-dir", type=Path, default=Path("checkpoints"))
     return parser.parse_args(argv)
 
@@ -44,10 +52,10 @@ def class_weights(y: np.ndarray) -> torch.Tensor:
     return torch.tensor(len(y) / (config.N_CLASSES * counts), dtype=torch.float32)
 
 
-def predict_classes(model: nn.Module, X: np.ndarray, device: str, batch_size: int) -> np.ndarray:
+def predict_classes(model: nn.Module, X: np.ndarray, batch_size: int) -> np.ndarray:
     model.eval()
     with torch.no_grad():
-        return np.concatenate([model(torch.from_numpy(X[i:i + batch_size]).to(device)).argmax(dim=1).cpu().numpy()
+        return np.concatenate([model(torch.from_numpy(X[i:i + batch_size]).to(DEVICE)).argmax(dim=1).cpu().numpy()
                                for i in range(0, len(X), batch_size)])
 
 
@@ -55,14 +63,14 @@ def train(model: nn.Module, data: dict, args: argparse.Namespace) -> dict:
     """train 분할로 학습하고 val macro F1이 가장 높은 결과를 돌려준다. 결과: state_dict, epoch, val_metrics."""
     X_train, y_train = data["train"]
     X_val, y_val = data["val"]
-    model.to(args.device)
+    model.to(DEVICE)
     loader = DataLoader(
         TensorDataset(torch.from_numpy(X_train), torch.from_numpy(y_train).long()),
         batch_size=args.batch_size,
         shuffle=True,
         drop_last=len(X_train) > args.batch_size,    # BatchNorm은 크기 1인 배치를 처리하지 못한다
     )
-    loss_fn = nn.CrossEntropyLoss(weight=class_weights(y_train).to(args.device))
+    loss_fn = nn.CrossEntropyLoss(weight=class_weights(y_train).to(DEVICE))
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     best = {"val_metrics": {"macro_f1": -1.0}}
@@ -70,11 +78,11 @@ def train(model: nn.Module, data: dict, args: argparse.Namespace) -> dict:
         model.train()
         for xb, yb in loader:
             optimizer.zero_grad()
-            loss = loss_fn(model(xb.to(args.device)), yb.to(args.device))
+            loss = loss_fn(model(xb.to(DEVICE)), yb.to(DEVICE))
             loss.backward()
             optimizer.step()
 
-        metrics = classification_metrics(y_val, predict_classes(model, X_val, args.device, args.batch_size))
+        metrics = classification_metrics(y_val, predict_classes(model, X_val, args.batch_size))
         print(f"epoch {epoch}: loss {loss.item():.4f}, val macro F1 {metrics['macro_f1']:.3f}")
         if metrics["macro_f1"] > best["val_metrics"]["macro_f1"]:
             state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
@@ -92,6 +100,7 @@ def next_weight_path(out_dir: Path) -> Path:
 
 def main(argv: list[str] | None = None) -> Path:
     args = parse_args(argv)
+    require_gpu()
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
