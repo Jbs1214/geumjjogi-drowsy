@@ -34,7 +34,7 @@ python -m landmarks.extract <영상.mp4> -o outputs/landmarks
 ```
 
 ## 웹캠 검증 (2026-10-30, 1명)
-얼굴 검출률 100%, 29.5 FPS. pitch는 숙이면 약 +20도, 들면 약 −20도. 자세한 값은 `docs/landmarks_검증결과.md`.
+얼굴 검출률 100%, 29.5 FPS. pitch는 숙이면 약 +20도, 들면 약 −20도.
 
 ## 정할 것
 - AI Hub 영상에서 얼굴이 작으면 바운딩박스로 잘라 넣을지 (샘플 데이터로 확인)

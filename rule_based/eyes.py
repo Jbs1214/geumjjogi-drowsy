@@ -10,18 +10,17 @@ import pandas as pd
 
 from landmarks.features import add_features
 from rule_based import config
+from rule_based.common import runs, under
 
 
 def is_closed(ear: np.ndarray) -> np.ndarray:
     """프레임별 ear → 눈 감음 여부(bool). 얼굴 미검출(NaN)은 감지 못 한 것이므로 False."""
-    ear = np.asarray(ear, dtype=float)
-    return ~np.isnan(ear) & (np.nan_to_num(ear, nan=np.inf) < config.EAR_CLOSED)
+    return under(ear, config.EAR_CLOSED)
 
 
 def closed_runs(t: np.ndarray, closed: np.ndarray) -> list[tuple[float, float]]:
     """연속으로 감은 구간마다 (시작 초, 끝 초). 길이는 끝 − 시작 (첫 감음 프레임 → 마지막 감음 프레임)."""
-    edges = np.flatnonzero(np.diff(np.r_[0, np.asarray(closed, dtype=int), 0]))
-    return [(float(t[s]), float(t[e - 1])) for s, e in zip(edges[::2], edges[1::2])]
+    return [(float(t[s]), float(t[e])) for s, e in zip(*runs(closed))]
 
 
 def main() -> None:
