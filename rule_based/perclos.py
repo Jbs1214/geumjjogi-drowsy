@@ -4,7 +4,6 @@
 # 실행: python -m rule_based.perclos <landmarks.extract CSV>
 
 import argparse
-import math
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +11,7 @@ import pandas as pd
 
 from landmarks.features import add_features
 from rule_based import config
+from rule_based.common import every_second, window_ratio
 from rule_based.eyes import is_closed
 
 
@@ -23,14 +23,7 @@ def perclos(t: np.ndarray, ear: np.ndarray) -> np.ndarray:
     """
     t = np.asarray(t, dtype=float)
     ear = np.asarray(ear, dtype=float)
-    closed = np.r_[0, np.cumsum(is_closed(ear))]
-    valid = np.r_[0, np.cumsum(~np.isnan(ear))]
-    left = np.searchsorted(t, t - config.WINDOW_SEC, side="right")
-    right = np.arange(1, len(t) + 1)
-    n_valid = valid[right] - valid[left]
-    full = t - t[0] >= config.WINDOW_SEC
-    with np.errstate(invalid="ignore", divide="ignore"):
-        return np.where(full & (n_valid > 0), (closed[right] - closed[left]) / n_valid, np.nan)
+    return window_ratio(t, is_closed(ear), ~np.isnan(ear))
 
 
 def main() -> None:
@@ -44,8 +37,7 @@ def main() -> None:
     print(f"{args.csv}: 창 {config.WINDOW_SEC}초, 기준 ear < {config.EAR_CLOSED}, 최대 PERCLOS {df['perclos'].max():.3f}")
 
     # 1초마다 그 시각 직전 프레임의 값. NaN은 아직 창 길이만큼 쌓이지 않은 구간
-    idx = [int(np.searchsorted(t, sec, side="right")) - 1 for sec in range(1, math.ceil(t[-1]) + 1)]
-    print(df.iloc[idx][["t", "perclos"]].round(3).to_string(index=False, na_rep="NaN"))
+    print(df.iloc[every_second(t)][["t", "perclos"]].round(3).to_string(index=False, na_rep="NaN"))
 
 
 if __name__ == "__main__":

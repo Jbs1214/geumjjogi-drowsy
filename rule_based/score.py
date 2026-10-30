@@ -4,7 +4,6 @@
 # 실행: python -m rule_based.score <landmarks.extract CSV>
 
 import argparse
-import math
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +12,7 @@ import pandas as pd
 from landmarks.features import add_features
 from rule_based import config
 from rule_based.closure import longest_closure
+from rule_based.common import every_second
 from rule_based.head import head_down_ratio
 from rule_based.perclos import perclos
 from rule_based.yawn import yawn_count
@@ -52,13 +52,12 @@ def main() -> None:
     df = pd.concat([df[["t"]], parts], axis=1)
     df["score"] = drowsiness_score(parts)
     df["stage"] = stage(df["score"])
-    best = df["score"].idxmax()
-    print(f"{args.csv}: 최고 {df['score'][best]:.1f}점 ({df['t'][best]:.3f}초), "
-          f"주의 {config.STAGE_WARN} / 졸음 {config.STAGE_DROWSY}, 가중치 {config.WEIGHTS}")
+    # 영상이 WINDOW_SEC보다 짧거나 얼굴이 계속 안 잡히면 점수가 모두 NaN이라 최고점이 없다
+    best = f"{df['score'].max():.1f}점 ({df['t'][df['score'].idxmax()]:.3f}초)" if df["score"].notna().any() else "없음"
+    print(f"{args.csv}: 최고 {best}, 주의 {config.STAGE_WARN} / 졸음 {config.STAGE_DROWSY}, 가중치 {config.WEIGHTS}")
 
     # 1초마다 그 시각 직전 프레임의 값. 지표는 0~1로 맞춘 값
-    idx = [int(np.searchsorted(t, sec, side="right")) - 1 for sec in range(1, math.ceil(t[-1]) + 1)]
-    print(df.iloc[idx].round(3).to_string(index=False, na_rep="NaN"))
+    print(df.iloc[every_second(t)].round(3).to_string(index=False, na_rep="NaN"))
 
 
 if __name__ == "__main__":

@@ -4,19 +4,18 @@
 # 실행: python -m rule_based.head <landmarks.extract CSV>
 
 import argparse
-import math
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from rule_based import config
+from rule_based.common import every_second, over, window_ratio
 
 
 def is_down(pitch: np.ndarray) -> np.ndarray:
     """프레임별 pitch(도) → 고개 숙임 여부(bool). 얼굴 미검출(NaN)은 False."""
-    pitch = np.asarray(pitch, dtype=float)
-    return ~np.isnan(pitch) & (np.nan_to_num(pitch, nan=-np.inf) > config.PITCH_DOWN)
+    return over(pitch, config.PITCH_DOWN)
 
 
 def head_down_ratio(t: np.ndarray, pitch: np.ndarray) -> np.ndarray:
@@ -26,14 +25,7 @@ def head_down_ratio(t: np.ndarray, pitch: np.ndarray) -> np.ndarray:
     """
     t = np.asarray(t, dtype=float)
     pitch = np.asarray(pitch, dtype=float)
-    down = np.r_[0, np.cumsum(is_down(pitch))]
-    valid = np.r_[0, np.cumsum(~np.isnan(pitch))]
-    left = np.searchsorted(t, t - config.WINDOW_SEC, side="right")
-    right = np.arange(1, len(t) + 1)
-    n_valid = valid[right] - valid[left]
-    full = t - t[0] >= config.WINDOW_SEC
-    with np.errstate(invalid="ignore", divide="ignore"):
-        return np.where(full & (n_valid > 0), (down[right] - down[left]) / n_valid, np.nan)
+    return window_ratio(t, is_down(pitch), ~np.isnan(pitch))
 
 
 def main() -> None:
@@ -48,8 +40,7 @@ def main() -> None:
     print(f"{args.csv}: 고개 숙임 {down.sum()}프레임 ({down.mean():.1%}), 기준 pitch > {config.PITCH_DOWN}, 최대 비율 {df['head_down'].max():.3f}")
 
     # 1초마다 그 시각 직전 프레임의 값. NaN은 아직 창 길이만큼 쌓이지 않은 구간
-    idx = [int(np.searchsorted(t, sec, side="right")) - 1 for sec in range(1, math.ceil(t[-1]) + 1)]
-    print(df.iloc[idx][["t", "pitch", "head_down"]].round(3).to_string(index=False, na_rep="NaN"))
+    print(df.iloc[every_second(t)][["t", "pitch", "head_down"]].round(3).to_string(index=False, na_rep="NaN"))
 
 
 if __name__ == "__main__":

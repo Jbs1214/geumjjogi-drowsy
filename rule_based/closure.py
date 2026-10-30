@@ -4,7 +4,6 @@
 # 실행: python -m rule_based.closure <landmarks.extract CSV>
 
 import argparse
-import math
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +11,7 @@ import pandas as pd
 
 from landmarks.features import add_features
 from rule_based import config
+from rule_based.common import every_second, runs, window_full, window_start
 from rule_based.eyes import is_closed
 
 
@@ -22,16 +22,14 @@ def longest_closure(t: np.ndarray, ear: np.ndarray) -> np.ndarray:
     첫 프레임부터 WINDOW_SEC가 지나기 전에는 NaN (perclos와 같은 규칙).
     """
     t = np.asarray(t, dtype=float)
-    edges = np.flatnonzero(np.diff(np.r_[0, is_closed(ear).astype(int), 0]))
-    starts, ends = edges[::2], edges[1::2] - 1  # 구간마다 첫·마지막 감음 프레임 번호
-    left = np.searchsorted(t, t - config.WINDOW_SEC, side="right")
+    starts, ends = runs(is_closed(ear))
+    left = window_start(t)
     out = np.zeros(len(t))
     for i in range(len(t)):
         inside = (starts <= i) & (ends >= left[i])
         if inside.any():
             out[i] = (t[np.minimum(ends[inside], i)] - t[np.maximum(starts[inside], left[i])]).max()
-    full = t - t[0] >= config.WINDOW_SEC
-    return np.where(full, out, np.nan)
+    return np.where(window_full(t), out, np.nan)
 
 
 def main() -> None:
@@ -45,8 +43,7 @@ def main() -> None:
     print(f"{args.csv}: 창 {config.WINDOW_SEC}초, 기준 ear < {config.EAR_CLOSED}, 최대 {df['longest_closure'].max():.3f}초")
 
     # 1초마다 그 시각 직전 프레임의 값. NaN은 아직 창 길이만큼 쌓이지 않은 구간
-    idx = [int(np.searchsorted(t, sec, side="right")) - 1 for sec in range(1, math.ceil(t[-1]) + 1)]
-    print(df.iloc[idx][["t", "longest_closure"]].round(3).to_string(index=False, na_rep="NaN"))
+    print(df.iloc[every_second(t)][["t", "longest_closure"]].round(3).to_string(index=False, na_rep="NaN"))
 
 
 if __name__ == "__main__":
