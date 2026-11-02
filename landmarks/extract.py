@@ -1,4 +1,4 @@
-# 영상·웹캠 프레임 → Face Landmarker → 프레임마다 시각·검출 여부·17개 좌표·고개 각도 한 행 (기획서 3-1 ①~③).
+# 영상·웹캠 프레임 → Face Landmarker → 프레임마다 시각·검출 여부·17개 좌표·고개 각도·블렌드셰이프 한 행 (기획서 3-1 ①~③).
 # 실시간 데모도 LandmarkExtractor.process()를 그대로 쓴다.
 #
 # 실행: python -m landmarks.extract <영상.mp4> [-o outputs/landmarks]
@@ -19,7 +19,12 @@ MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "face_landmarker.t
 
 COORD_COLUMNS = [f"{name}_{axis}" for name in POINTS for axis in ("x", "y")]
 POSE_COLUMNS = ["pitch", "yaw", "roll"]     # 도(degree)
-COLUMNS = ["t", "face_found", *COORD_COLUMNS, *POSE_COLUMNS]
+BLENDSHAPES = {"blink_l": "eyeBlinkLeft", "blink_r": "eyeBlinkRight", "jaw_open": "jawOpen"}    # 열 이름 → 모델의 이름
+BLEND_COLUMNS = list(BLENDSHAPES)
+COLUMNS = ["t", "face_found", *COORD_COLUMNS, *POSE_COLUMNS, *BLEND_COLUMNS]
+
+# 학습 데이터를 만든 auto_label.py와 같은 값. 다르면 얼굴을 잡는 프레임이 학습 때와 달라진다
+MIN_CONFIDENCE = 0.3
 
 
 def matrix_to_angles(matrix: np.ndarray) -> tuple[float, float, float]:
@@ -35,13 +40,17 @@ class LandmarkExtractor:
             base_options=BaseOptions(model_asset_path=str(model_path)),
             running_mode=vision.RunningMode.VIDEO,
             num_faces=1,
+            output_face_blendshapes=True,
             output_facial_transformation_matrixes=True,
+            min_face_detection_confidence=MIN_CONFIDENCE,
+            min_face_presence_confidence=MIN_CONFIDENCE,
+            min_tracking_confidence=MIN_CONFIDENCE,
         )
         self._landmarker = vision.FaceLandmarker.create_from_options(options)
         self._last_ms = -1
 
     def process(self, frame_bgr: np.ndarray, t: float) -> dict:
-        """BGR 프레임 하나와 영상 시각 t(초) → 표 한 행. 얼굴이 없으면 좌표·각도는 NaN."""
+        """BGR 프레임 하나와 영상 시각 t(초) → 표 한 행. 얼굴이 없으면 좌표·각도·블렌드셰이프는 NaN."""
         h, w = frame_bgr.shape[:2]
         image = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
         # VIDEO 모드는 타임스탬프가 계속 커져야 한다
@@ -51,7 +60,7 @@ class LandmarkExtractor:
 
         row = {"t": t, "face_found": bool(result.face_landmarks)}
         if not result.face_landmarks:
-            row.update(dict.fromkeys(COORD_COLUMNS + POSE_COLUMNS, np.nan))
+            row.update(dict.fromkeys(COORD_COLUMNS + POSE_COLUMNS + BLEND_COLUMNS, np.nan))
             return row
 
         # 정규화 좌표를 픽셀로 바꾼다. 가로·세로 비율이 달라도 EAR·MAR가 찌그러지지 않게
@@ -60,6 +69,8 @@ class LandmarkExtractor:
             row[f"{name}_x"] = landmarks[idx].x * w
             row[f"{name}_y"] = landmarks[idx].y * h
         row.update(zip(POSE_COLUMNS, matrix_to_angles(np.asarray(result.facial_transformation_matrixes[0]))))
+        scores = {c.category_name: c.score for c in result.face_blendshapes[0]}
+        row.update({column: scores[name] for column, name in BLENDSHAPES.items()})
         return row
 
     def close(self) -> None:
