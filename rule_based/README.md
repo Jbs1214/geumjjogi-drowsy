@@ -1,18 +1,18 @@
 # rule_based — 규칙 기반 졸음 판정과 경고
 
-담당: 김민영. 지금 있는 것: **눈 감김 판정, 2초 경고, PERCLOS, 졸음 점수(0~100)와 단계(정상/주의/졸음)**
+담당: 김민영. 지금 있는 것: **눈 감김 판정, 연속 눈 감김 타이머(주의 1.5초·졸음 3초), PERCLOS, 졸음 점수(0~100)와 점수 단계**
 
 ## 맡은 일 (기획서 7절)
 - 규칙 기반 기준선 (PERCLOS·졸음 점수)
-- 경고 로직 (눈 감김 2초)
+- 경고 로직 (연속 눈 감김 주의 1.5초·졸음 3초)
 
 ## 파일
 | 파일 | 하는 일 |
 | --- | --- |
 | `config.py` | 임계값·설정. 코드에 값을 직접 쓰지 않고 여기서 가져다 쓴다 |
 | `common.py` | 지표들이 같이 쓰는 계산: 임계값 판정(NaN은 False), 연속 구간, 최근 `WINDOW_SEC`초 창 |
-| `eyes.py` | 프레임별 눈 감음 판정 (`ear < EAR_CLOSED`, 얼굴 미검출은 False)과 연속 감음 구간 |
-| `alarm.py` | 눈 감음이 `ALERT_SEC` 이상 이어지면 경고. 실시간은 `EyeClosureAlarm.update()` |
+| `eyes.py` | 프레임별 눈 감음 판정 (`ear < EAR_CLOSED`, 얼굴 미검출은 False)과 연속 감음 구간. 타이머 입력용 임계값은 `ear_threshold()` |
+| `alarm.py` | 규칙·모델 공용 타이머. `EyeClosureAlarm.update(closed, t, eyes_visible=True)` → (단계, 연속 눈 감김 초). 모델 확률은 `ProbToClosed`로 `closed`를 만든다 |
 | `perclos.py` | 최근 `WINDOW_SEC`초 중 눈 감은 프레임 비율 |
 | `closure.py` | 최근 `WINDOW_SEC`초 안 가장 긴 연속 눈 감음(초) |
 | `yawn.py` | 최근 `WINDOW_SEC`초 하품 횟수. `mar > MAR_YAWN`이 `YAWN_MIN_SEC` 이상이면 1회 |
@@ -24,7 +24,9 @@
 | 설정 | 값 | 근거 |
 | --- | --- | --- |
 | `EAR_CLOSED` | 0.2 | 웹캠 검증: 감음 0.04, 뜬 상태 최저 0.25 |
-| `ALERT_SEC` | 2.0 | 기획서 목표: 눈 감김 약 2초 이상 시 경고 |
+| `CAUTION_SEC` / `DROWSY_SEC` | 1.5 / 3.0 | 기획서 3-4. 연속 눈 감김 주의 / 졸음 |
+| `BEST_PARAMS_PATH` / `EAR_BASE_PERCENTILE` | `auto_label/best_params.json` / 75 | 타이머 입력의 임계값 = `ear_ratio` × 클립 EAR P75. 파일이 없으면 `EAR_CLOSED` |
+| `PROB_ON` / `PROB_OFF` | 0.6 / 0.4 | 기획서 3-3. 모델 확률 히스테리시스 |
 | `MAR_YAWN` | 0.3 | 하품 영상: 하품 최고 0.47~0.50, 입 다묾 최고 0.06 |
 | `YAWN_MIN_SEC` | 1.0 | 짧은 입 벌림과 구분. 하품 길이 1.47~2.17초 |
 | `PITCH_DOWN` | 15.0 | 고개 숙임 중앙값 +19.6, 정면 +1~+9.4 |
@@ -48,12 +50,14 @@
 
 ## 입력 / 출력
 - 입력: `landmarks.extract` CSV (`add_features()`로 `ear`·`mar` 계산, `pitch`는 CSV에 있음)
-- 출력: 경고가 울린 시각(초), 프레임별 지표 4개·졸음 점수·단계
+- 출력: 주의·졸음이 된 시각(초), 프레임별 지표 4개·졸음 점수·점수 단계
+- 훅 미구현 상태의 `eyes_visible=False`: 값을 쓰지 않고 `closed`만 본다. `closed=False`면 타이머를 지우고 (정상, 0.0)을 낸다. 이어받기와 '판정 불가' 표시는 없다
+- 하품 제외와 이어받기는 `alarm.py`에 훅 자리만 있다 (기획서 7절 육주영 담당)
 
 ## 실행
 ```bash
 python -m rule_based.eyes outputs/landmarks/<이름>.csv      # 눈 감음 구간
-python -m rule_based.alarm outputs/landmarks/<이름>.csv     # 경고 시각
+python -m rule_based.alarm outputs/landmarks/<이름>.csv     # 주의·졸음 시각 (--best-params로 임계값 파일 지정)
 python -m rule_based.perclos outputs/landmarks/<이름>.csv   # 1초마다 PERCLOS
 python -m rule_based.closure outputs/landmarks/<이름>.csv   # 1초마다 가장 긴 눈 감김
 python -m rule_based.yawn outputs/landmarks/<이름>.csv      # 하품 구간과 1초마다 하품 횟수

@@ -2,7 +2,12 @@
 # 값을 바꾸면 이유와 결과를 README 실험 기록 표에 남긴다.
 
 EAR_CLOSED = 0.2        # ear가 이보다 작으면 눈 감음. 검증: 감음 0.04, 뜬 상태 최저 0.25 (고개 들 때)
-ALERT_SEC = 2.0         # 눈 감음이 이 시간(초) 이상 이어지면 경고. 기획서 목표: 눈 감김 약 2초 이상 시 경고
+CAUTION_SEC = 1.5       # 연속 눈 감김이 이 시간(초) 이상이면 주의. 기획서 3-4
+DROWSY_SEC = 3.0        # 연속 눈 감김이 이 시간(초) 이상이면 졸음. 기획서 3-4 (Euro NCAP SD202 수면 3초)
+BEST_PARAMS_PATH = "auto_label/best_params.json"  # 타이머 입력의 임계값 파일. 없으면 EAR_CLOSED를 쓴다
+EAR_BASE_PERCENTILE = 75  # 클립의 '눈 뜬' 기준 EAR. 임계값 = best_params의 ear_ratio × 이 퍼센타일 (auto_label.py와 같음)
+PROB_ON = 0.6           # 모델 눈감김 확률이 이 이상이면 감음으로 켠다. 기획서 3-3
+PROB_OFF = 0.4          # 모델 눈감김 확률이 이 이하이면 끈다. 사이 값은 이전 상태 유지
 
 MAR_YAWN = 0.3          # mar가 이보다 크면 입 벌림. 검증: 하품 최고 0.47~0.50, 입 다묾 최고 0.06 (yawn 영상)
 YAWN_MIN_SEC = 1.0      # 입 벌림이 이 시간(초) 이상 이어지면 하품 1회. 짧은 입 벌림(말하기 등)과 구분. 검증: 하품 1.47~2.17초
