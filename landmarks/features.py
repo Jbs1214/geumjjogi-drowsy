@@ -1,11 +1,11 @@
-# 좌표 표 → face·EAR·MAR 열 추가 (기획서 3-1 ④, 3-2). 고개 각도와 블렌드셰이프는 extract.py가 이미 넣는다.
+# 좌표 표 → EAR·MAR 열 추가 (기획서 3-1 ④, 3-2). 고개 각도(pitch·yaw·roll)는 extract.py가 이미 넣는다.
 # PERCLOS처럼 이동창으로 구하는 비율은 rule_based/에서 계산한다.
 
 import numpy as np
 import pandas as pd
 
-# sequence_model 입력으로 쓰는 특징 11개. 자동 라벨 JSON의 feature_names와 순서가 같아야 한다
-FEATURE_COLUMNS = ("face", "ear_l", "ear_r", "ear", "mar", "pitch", "yaw", "roll", "blink_l", "blink_r", "jaw_open")
+# sequence_model 입력으로 쓰는 특징 열 (config.FEATURE_COLUMNS와 맞춘다)
+FEATURE_COLUMNS = ("ear", "mar", "pitch", "yaw", "roll")
 
 
 def _dist(df: pd.DataFrame, a: str, b: str) -> pd.Series:
@@ -24,9 +24,8 @@ def mouth_aspect_ratio(df: pd.DataFrame) -> pd.Series:
 
 
 def add_features(df: pd.DataFrame) -> pd.DataFrame:
-    """extract.py 표 → face(0/1), ear_l, ear_r, ear(좌우 평균), mar 열을 더한 새 표. 얼굴 미검출 행의 EAR·MAR는 NaN."""
+    """extract.py 표 → ear_l, ear_r, ear(좌우 평균), mar 열을 더한 새 표. 얼굴 미검출 행은 NaN."""
     out = df.copy()
-    out["face"] = df["face_found"].astype(float)
     out["ear_l"] = eye_aspect_ratio(df, "le")
     out["ear_r"] = eye_aspect_ratio(df, "re")
     out["ear"] = (out["ear_l"] + out["ear_r"]) / 2

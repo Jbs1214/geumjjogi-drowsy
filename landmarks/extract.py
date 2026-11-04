@@ -1,4 +1,4 @@
-# 영상·웹캠 프레임 → Face Landmarker → 프레임마다 시각·검출 여부·17개 좌표·고개 각도·블렌드셰이프 한 행 (기획서 3-1 ①~③).
+# 영상·웹캠 프레임 → Face Landmarker → 프레임마다 시각·검출 여부·17개 좌표·고개 각도 한 행 (기획서 3-1 ①~③).
 # 실시간 데모도 LandmarkExtractor.process()를 그대로 쓴다.
 #
 # 실행: python -m landmarks.extract <영상.mp4> [-o outputs/landmarks]
@@ -19,12 +19,10 @@ MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "face_landmarker.t
 
 COORD_COLUMNS = [f"{name}_{axis}" for name in POINTS for axis in ("x", "y")]
 POSE_COLUMNS = ["pitch", "yaw", "roll"]     # 도(degree)
-BLENDSHAPES = {"blink_l": "eyeBlinkLeft", "blink_r": "eyeBlinkRight", "jaw_open": "jawOpen"}    # 열 이름 → 모델의 이름
-BLEND_COLUMNS = list(BLENDSHAPES)
-COLUMNS = ["t", "face_found", *COORD_COLUMNS, *POSE_COLUMNS, *BLEND_COLUMNS]
-
-# 학습 데이터를 만든 auto_label.py와 같은 값. 다르면 얼굴을 잡는 프레임이 학습 때와 달라진다
-MIN_CONFIDENCE = 0.3
+# 블렌드셰이프 이름 → 표의 열 이름. 값은 0~1이다
+BLENDSHAPES = {"eyeBlinkLeft": "blink_l", "eyeBlinkRight": "blink_r", "jawOpen": "jaw_open"}
+BLENDSHAPE_COLUMNS = list(BLENDSHAPES.values())
+COLUMNS = ["t", "face_found", *COORD_COLUMNS, *POSE_COLUMNS, *BLENDSHAPE_COLUMNS]
 
 
 def matrix_to_angles(matrix: np.ndarray) -> tuple[float, float, float]:
@@ -34,33 +32,40 @@ def matrix_to_angles(matrix: np.ndarray) -> tuple[float, float, float]:
 
 
 class LandmarkExtractor:
-    def __init__(self, model_path: Path = MODEL_PATH) -> None:
+    def __init__(self, model_path: Path = MODEL_PATH, delegate: str = "cpu", mode: str = "video") -> None:
+        """mode가 'image'면 낱장으로 처리한다. 서로 다른 사람의 이미지에 앞 프레임 추적을 쓰지 않으려는 것이다."""
+        if mode not in ("video", "image"):
+            raise ValueError(f"mode는 video 또는 image여야 합니다: {mode}")
+        self._mode = mode
         # 고개 각도는 17개 좌표 대신 모델이 내는 얼굴 변환 행렬에서 구한다 (점 수가 적어 solvePnP가 불안정하다)
         options = vision.FaceLandmarkerOptions(
-            base_options=BaseOptions(model_asset_path=str(model_path)),
-            running_mode=vision.RunningMode.VIDEO,
+            base_options=BaseOptions(
+                model_asset_path=str(model_path),
+                delegate=BaseOptions.Delegate.GPU if delegate == "gpu" else BaseOptions.Delegate.CPU,
+            ),
+            running_mode=vision.RunningMode.VIDEO if mode == "video" else vision.RunningMode.IMAGE,
             num_faces=1,
             output_face_blendshapes=True,
             output_facial_transformation_matrixes=True,
-            min_face_detection_confidence=MIN_CONFIDENCE,
-            min_face_presence_confidence=MIN_CONFIDENCE,
-            min_tracking_confidence=MIN_CONFIDENCE,
         )
         self._landmarker = vision.FaceLandmarker.create_from_options(options)
         self._last_ms = -1
 
     def process(self, frame_bgr: np.ndarray, t: float) -> dict:
-        """BGR 프레임 하나와 영상 시각 t(초) → 표 한 행. 얼굴이 없으면 좌표·각도·블렌드셰이프는 NaN."""
+        """BGR 프레임 하나와 영상 시각 t(초) → 표 한 행. 얼굴이 없으면 좌표·각도는 NaN."""
         h, w = frame_bgr.shape[:2]
         image = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
-        # VIDEO 모드는 타임스탬프가 계속 커져야 한다
-        ms = max(int(t * 1000), self._last_ms + 1)
-        self._last_ms = ms
-        result = self._landmarker.detect_for_video(image, ms)
+        if self._mode == "image":
+            result = self._landmarker.detect(image)
+        else:
+            # VIDEO 모드는 타임스탬프가 계속 커져야 한다
+            ms = max(int(t * 1000), self._last_ms + 1)
+            self._last_ms = ms
+            result = self._landmarker.detect_for_video(image, ms)
 
         row = {"t": t, "face_found": bool(result.face_landmarks)}
         if not result.face_landmarks:
-            row.update(dict.fromkeys(COORD_COLUMNS + POSE_COLUMNS + BLEND_COLUMNS, np.nan))
+            row.update(dict.fromkeys(COORD_COLUMNS + POSE_COLUMNS + BLENDSHAPE_COLUMNS, np.nan))
             return row
 
         # 정규화 좌표를 픽셀로 바꾼다. 가로·세로 비율이 달라도 EAR·MAR가 찌그러지지 않게
@@ -69,8 +74,8 @@ class LandmarkExtractor:
             row[f"{name}_x"] = landmarks[idx].x * w
             row[f"{name}_y"] = landmarks[idx].y * h
         row.update(zip(POSE_COLUMNS, matrix_to_angles(np.asarray(result.facial_transformation_matrixes[0]))))
-        scores = {c.category_name: c.score for c in result.face_blendshapes[0]}
-        row.update({column: scores[name] for column, name in BLENDSHAPES.items()})
+        scores = {shape.category_name: shape.score for shape in result.face_blendshapes[0]}
+        row.update({column: scores[name] for name, column in BLENDSHAPES.items()})
         return row
 
     def close(self) -> None:
@@ -83,8 +88,8 @@ class LandmarkExtractor:
         self.close()
 
 
-def extract_video(path: Path, model_path: Path = MODEL_PATH) -> pd.DataFrame:
-    """영상 파일 → 프레임별 표 (열: COLUMNS). 시각 t는 프레임 번호 ÷ 원본 FPS. 15 FPS 맞춤은 sequence_model에서 한다."""
+def extract_video(path: Path, model_path: Path = MODEL_PATH, delegate: str = "cpu") -> pd.DataFrame:
+    """영상 파일 → 프레임별 표 (열: COLUMNS). 시각 t는 프레임 번호 ÷ 원본 FPS. 30 FPS 맞춤은 sequence_model에서 한다."""
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
         raise FileNotFoundError(f"영상을 열 수 없습니다: {path}")
@@ -94,7 +99,7 @@ def extract_video(path: Path, model_path: Path = MODEL_PATH) -> pd.DataFrame:
         raise ValueError(f"영상 FPS를 읽을 수 없습니다: {path}")
 
     rows = []
-    with LandmarkExtractor(model_path) as extractor:
+    with LandmarkExtractor(model_path, delegate) as extractor:
         i = 0
         while True:
             ok, frame = cap.read()
