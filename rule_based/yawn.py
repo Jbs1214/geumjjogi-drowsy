@@ -31,6 +31,18 @@ def yawn_times(t: np.ndarray, mar: np.ndarray) -> np.ndarray:
     return np.array(times)
 
 
+def yawning(t: np.ndarray, mar: np.ndarray) -> np.ndarray:
+    """프레임별 지금 하품 중인지(bool). 입을 벌린 시간이 YAWN_MIN_SEC에 닿은 프레임부터 다물 때까지 참이다.
+
+    yawn_times()가 센 시각에서 참이 되고, 그 프레임까지의 기록만 쓰므로 실시간으로도 같은 값이 나온다.
+    """
+    t = np.asarray(t, dtype=float)
+    out = np.zeros(len(t), dtype=bool)
+    for s, e in zip(*runs(is_open(mar))):
+        out[s:e + 1] = t[s:e + 1] - t[s] >= config.YAWN_MIN_SEC
+    return out
+
+
 def yawn_count(t: np.ndarray, mar: np.ndarray) -> np.ndarray:
     """프레임마다 (t − WINDOW_SEC, t] 구간에서 센 하품 횟수. 첫 프레임부터 WINDOW_SEC가 지나기 전에는 NaN (perclos와 같은 규칙)."""
     t = np.asarray(t, dtype=float)

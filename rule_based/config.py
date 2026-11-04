@@ -2,18 +2,20 @@
 # 값을 바꾸면 이유와 결과를 README 실험 기록 표에 남긴다.
 
 EAR_CLOSED = 0.2        # ear가 이보다 작으면 눈 감음. 검증: 감음 0.04, 뜬 상태 최저 0.25 (고개 들 때)
-CAUTION_SEC = 1.5       # 연속 눈 감김이 이 시간(초) 이상이면 주의. 기획서 3-4
-DROWSY_SEC = 3.0        # 연속 눈 감김이 이 시간(초) 이상이면 졸음. 기획서 3-4 (Euro NCAP SD202 수면 3초)
-BEST_PARAMS_PATH = "auto_label/best_params.json"  # 타이머 입력의 임계값 파일. 없으면 EAR_CLOSED를 쓴다
-EAR_BASE_PERCENTILE = 75  # 클립의 '눈 뜬' 기준 EAR. 임계값 = best_params의 ear_ratio × 이 퍼센타일 (auto_label.py와 같음)
-PROB_ON = 0.6           # 모델 눈감김 확률이 이 이상이면 감음으로 켠다. 기획서 3-3
-PROB_OFF = 0.4          # 모델 눈감김 확률이 이 이하이면 끈다. 사이 값은 이전 상태 유지
+WARN_SEC = 1.5          # 눈 감음이 이 시간(초) 이상 이어지면 주의. 기획서 3-4의 시작값
+ALERT_SEC = 3.0         # 눈 감음이 이 시간(초) 이상 이어지면 졸음 경고. 기획서 3-4
+CARRY_MIN_SEC = 0.5     # 판정 불가(눈이 안 보임)가 되기 전에 이만큼 감고 있었으면 타이머를 이어받는다. 수정 기획서 F 5-1
+UNKNOWN_ALERT_SEC = 3.0 # 판정 불가가 이 시간(초) 이어지면 확인 필요 경고. 수정 기획서 F 5-3
+YAWN_REPEAT = 3         # 하품이 YAWN_REPEAT_WINDOW_SEC 안에 이 횟수면 하품 주의. 수정 기획서 F 4·5-3
+YAWN_REPEAT_WINDOW_SEC = 300.0
+YAWN_COOLDOWN_SEC = 120.0   # 하품 주의 뒤 이 시간 동안 다시 알리지 않는다
+YAWN_DISPLAY_CLOSED_SEC = 0.5   # 입을 다문 지 이만큼 지나면 화면에서 하품을 끝낸다 (창 정답 50%로 생기는 지연을 화면에서 줄임)
 
 MAR_YAWN = 0.3          # mar가 이보다 크면 입 벌림. 검증: 하품 최고 0.47~0.50, 입 다묾 최고 0.06 (yawn 영상)
 YAWN_MIN_SEC = 1.0      # 입 벌림이 이 시간(초) 이상 이어지면 하품 1회. 짧은 입 벌림(말하기 등)과 구분. 검증: 하품 1.47~2.17초
 PITCH_DOWN = 15.0       # pitch(도)가 이보다 크면 고개 숙임 (숙이면 +). 검증: 숙임 중앙값 +19.6, 정면은 녹화마다 +1~+9.4라 보정 필요
 
-WINDOW_SEC = 7          # 시간창 길이(초). 팀 합의 (15 FPS 기준 105행). sequence_model/config.py의 10과 다르다
+WINDOW_SEC = 30         # PERCLOS 이동창 길이(초). 기획서 3-2의 웹캠 판정 30~60초. 모델의 2초 창과는 별개다
 
 # 졸음 점수 = 100 × Σ 가중치 × 지표(0~1). 지표는 아래 값에서 1.0이 되고 그 위는 1.0으로 자른다
 PERCLOS_FULL = 0.5      # PERCLOS
