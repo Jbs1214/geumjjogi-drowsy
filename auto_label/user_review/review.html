@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>사용자 영상 정답 표시</title>
+<style>
+  :root {
+    --bg: #15171a; --panel: #1f2227; --line: #363b43; --text: #e8eaed; --muted: #a2a9b4; --accent: #6ea8fe;
+    --s0: #3f9d6b; --s1: #d9534f; --s2: #8d6fd1; --s3: #e0a030; --s4: #6c757d; --s5: #b5651d;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, "Malgun Gothic", sans-serif; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; max-width: 1320px; margin: 0 auto; padding: 16px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  .muted { color: var(--muted); font-size: 13px; }
+  video { width: 100%; max-height: 62vh; background: #000; display: block; border-radius: 6px; }
+  .now { display: flex; justify-content: space-between; align-items: center; margin: 8px 0; gap: 12px; }
+  .badge { padding: 2px 10px; border-radius: 4px; font-weight: 600; color: #fff; }
+  #timeline { position: relative; height: 34px; border-radius: 4px; overflow: hidden; background: var(--panel); cursor: pointer; }
+  #timeline .seg { position: absolute; top: 0; bottom: 0; }
+  #playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; pointer-events: none; }
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-top: 10px; }
+  .controls label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+  button { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 6px 10px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #0b1a33; font-weight: 600; }
+  aside { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px; }
+  section h2 { font-size: 14px; margin: 0 0 8px; }
+  .states { display: grid; gap: 6px; }
+  .states button { display: grid; grid-template-columns: 24px 1fr; gap: 8px; text-align: left; align-items: start; }
+  .states kbd { background: var(--bg); border-radius: 3px; padding: 0 6px; font: 13px monospace; text-align: center; }
+  .states b { display: block; }
+  .states small { color: var(--muted); }
+  ul.keys { margin: 0; padding: 0; list-style: none; font-size: 13px; color: var(--muted); }
+  ul.keys li { display: flex; justify-content: space-between; gap: 8px; }
+  #clips { display: grid; grid-template-columns: repeat(10, 1fr); gap: 3px; }
+  #clips button { padding: 3px 0; font-size: 12px; }
+  #clips button.done { background: var(--s0); border-color: var(--s0); color: #fff; }
+  #clips button.draft { background: #e0a030; border-color: #e0a030; color: #111; }
+  #clips button.current { outline: 2px solid #fff; }
+  #message { min-height: 20px; font-size: 13px; color: #e0a030; }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+</style>
+</head>
+<body>
+<main>
+  <div>
+    <header>
+      <h1>클립 <span id="position">-</span></h1>
+      <span class="muted" id="progress"></span>
+    </header>
+    <video id="video" playsinline muted></video>
+    <div class="now">
+      <span><span class="badge" id="current">-</span> <span class="muted" id="time">0.00초</span></span>
+      <span class="muted" id="saved"></span>
+    </div>
+    <div id="timeline"><div id="playhead"></div></div>
+    <div class="controls">
+      <button id="play">재생</button>
+      <label>속도
+        <select id="rate"><option value="0.25">0.25배</option><option value="0.5" selected>0.5배</option><option value="1">1배</option></select>
+      </label>
+      <label>밝기 <input id="bright" type="range" min="1" max="6" step="0.25" value="2.5"></label>
+      <button id="undo">되돌리기</button>
+      <button id="reset">이 클립 다시</button>
+      <button id="prev">이전</button>
+      <button id="next">다음</button>
+      <button id="finish" class="primary">완료 후 다음</button>
+    </div>
+    <div id="message"></div>
+  </div>
+  <aside>
+    <section>
+      <h2>현재 시점부터 상태 바꾸기</h2>
+      <div class="states" id="states"></div>
+    </section>
+    <section>
+      <h2>기준</h2>
+      <ul class="keys">
+        <li>실제로 한 행동을 표시합니다. 한 시점에는 상태 하나만 고릅니다.</li>
+        <li>겹치면 우선순위가 높은 쪽을 고릅니다: 불확실 &gt; 눈감김 &gt; 고개숙임 &gt; 하품 &gt; 정상.</li>
+        <li>눈감김: 두 눈을 감고 있는 동안. 깜빡임처럼 짧아도 감긴 프레임이면 표시합니다.</li>
+        <li>실눈: 눈을 가늘게 떠도 눈동자가 보이면 정상입니다.</li>
+        <li>하품: 입을 크게 벌리기 시작해 다물 때까지. 하품 중 0.5초 이상 눈을 감으면 그 동안은 눈감김입니다.</li>
+        <li>고개숙임: 0.5초 이상 고개를 앞으로 떨구거나 숙여 정면에서 벗어남. 숙여서 눈이 안 보이면 '고개숙임(눈 안 보임)'입니다.</li>
+        <li>불확실: 얼굴이 가려지거나 화면 밖이라 판단할 수 없는 구간. 채점에서 뺍니다.</li>
+        <li>경계는 ← → 프레임 이동으로 맞춥니다.</li>
+      </ul>
+    </section>
+    <section>
+      <h2>단축키</h2>
+      <ul class="keys">
+        <li><span>Space</span><span>재생, 멈춤</span></li>
+        <li><span>← →</span><span>1프레임 이동</span></li>
+        <li><span>Shift + ← →</span><span>0.5초 이동</span></li>
+        <li><span>1 ~ 6</span><span>상태 바꾸기</span></li>
+        <li><span>Backspace</span><span>되돌리기</span></li>
+        <li><span>Enter</span><span>완료 후 다음</span></li>
+      </ul>
+    </section>
+    <section>
+      <h2>클립</h2>
+      <div id="clips"></div>
+    </section>
+  </aside>
+</main>
+<script>
+const STATES = [
+  { name: "정상", color: "var(--s0)", hint: "눈을 뜨고 정면을 봄" },
+  { name: "눈감김", color: "var(--s1)", hint: "두 눈을 감음" },
+  { name: "하품", color: "var(--s2)", hint: "입을 크게 벌려 하품함. 눈은 뜸" },
+  { name: "고개숙임", color: "var(--s3)", hint: "고개를 떨구거나 숙임. 눈은 뜬 것이 보임" },
+  { name: "고개숙임(눈 안 보임)", color: "var(--s5)", hint: "숙여서 눈이 보이지 않음" },
+  { name: "불확실", color: "var(--s4)", hint: "가려지거나 화면 밖이라 판단할 수 없음. 채점에서 뺀다" },
+];
+let FRAME = 1 / 30;     // 영상마다 서버가 준 원본 FPS로 바꾼다
+const video = document.getElementById("video");
+const timeline = document.getElementById("timeline");
+const playhead = document.getElementById("playhead");
+let clips = [];
+let index = 0;
+let points = [{ t: 0, state: "정상" }];     // 변경점. 각 상태는 다음 변경점까지 이어진다
+let history = [];
+let saveTimer = null;
+
+function stored(key, fallback) {
+  try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
+}
+function store(key, value) {
+  try { localStorage.setItem(key, value); } catch { /* 저장이 막혀도 검수에는 지장이 없다 */ }
+}
+function colorOf(name) { return STATES.find(s => s.name === name).color; }
+
+function toSegments() {
+  const duration = video.duration;
+  const merged = [];
+  for (const point of points) {
+    if (!merged.length || merged[merged.length - 1].state !== point.state) merged.push({ ...point });
+  }
+  return merged.map((point, i) => ({
+    start: point.t, end: i + 1 < merged.length ? merged[i + 1].t : duration, state: point.state,
+  }));
+}
+function fromSegments(segments) {
+  return segments.length ? segments.map(s => ({ t: s.start, state: s.state })) : [{ t: 0, state: "정상" }];
+}
+function stateAt(t) {
+  let state = points[0].state;
+  for (const point of points) { if (point.t <= t + 1e-6) state = point.state; }
+  return state;
+}
+
+function drawTimeline() {
+  timeline.querySelectorAll(".seg").forEach(node => node.remove());
+  if (!video.duration) return;
+  for (const segment of toSegments()) {
+    const node = document.createElement("div");
+    node.className = "seg";
+    node.style.left = `${100 * segment.start / video.duration}%`;
+    node.style.width = `${100 * (segment.end - segment.start) / video.duration}%`;
+    node.style.background = colorOf(segment.state);
+    timeline.insertBefore(node, playhead);
+  }
+}
+function drawNow() {
+  const t = video.currentTime;
+  const state = stateAt(t);
+  const badge = document.getElementById("current");
+  badge.textContent = state;
+  badge.style.background = colorOf(state);
+  document.getElementById("time").textContent = `${t.toFixed(2)}초 / ${(video.duration || 0).toFixed(2)}초`;
+  if (video.duration) playhead.style.left = `${100 * t / video.duration}%`;
+}
+function drawClips() {
+  const box = document.getElementById("clips");
+  box.textContent = "";
+  clips.forEach((clip, i) => {
+    const button = document.createElement("button");
+    button.textContent = i + 1;
+    button.className = `${clip.status === "todo" ? "" : clip.status}${i === index ? " current" : ""}`;
+    button.onclick = () => open(i);
+    box.append(button);
+  });
+  const done = clips.filter(c => c.status === "done").length;
+  document.getElementById("progress").textContent = `완료 ${done} / ${clips.length}`;
+  document.getElementById("position").textContent = `${index + 1} / ${clips.length}`;
+}
+
+async function post(done) {
+  const response = await fetch(`/api/label/${encodeURIComponent(clips[index].clip)}`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ segments: toSegments(), done }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "저장 실패");
+  clips[index].status = result.status;
+  document.getElementById("saved").textContent = done ? "완료 저장됨" : "초안 저장됨";
+  document.getElementById("message").textContent = "";
+  drawClips();
+}
+function report(error) {
+  document.getElementById("message").textContent = `저장하지 못했습니다: ${error.message}`;
+}
+function changed() {
+  drawTimeline();
+  drawNow();
+  document.getElementById("saved").textContent = "저장 중";
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => post(false).catch(report), 400);
+}
+function setState(name) {
+  history.push(points.map(p => ({ ...p })));
+  const t = video.currentTime < FRAME ? 0 : Math.round(video.currentTime / FRAME) * FRAME;
+  points = points.filter(p => Math.abs(p.t - t) > FRAME / 2);
+  points.push({ t: Number(t.toFixed(3)), state: name });
+  points.sort((a, b) => a.t - b.t);
+  if (points[0].t > 0) points.unshift({ t: 0, state: "정상" });
+  changed();
+}
+function undo() {
+  if (history.length) { points = history.pop(); changed(); }
+}
+function seek(delta) {
+  video.pause();
+  video.currentTime = Math.min(Math.max(video.currentTime + delta, 0), video.duration || 0);
+}
+function togglePlay() { video.paused ? video.play() : video.pause(); }
+
+async function open(i) {
+  clearTimeout(saveTimer);
+  index = Math.min(Math.max(i, 0), clips.length - 1);
+  FRAME = 1 / (clips[index].fps || 30);
+  const clip = encodeURIComponent(clips[index].clip);
+  const label = await (await fetch(`/api/label/${clip}`)).json();
+  points = fromSegments(label.segments);
+  history = [];
+  document.getElementById("saved").textContent = "";
+  video.src = `/video/${clip}.mp4`;
+  video.playbackRate = Number(document.getElementById("rate").value);
+  drawClips();
+}
+async function finish() {
+  clearTimeout(saveTimer);
+  try {
+    await post(true);
+    const next = clips.findIndex((c, i) => i > index && c.status !== "done");
+    const fallback = clips.findIndex(c => c.status !== "done");
+    if (next >= 0 || fallback >= 0) open(next >= 0 ? next : fallback);
+    else document.getElementById("message").textContent = "모든 클립을 완료했습니다.";
+  } catch (error) { report(error); }
+}
+
+function applyBrightness() {
+  const value = document.getElementById("bright").value;
+  video.style.filter = `brightness(${value})`;
+  store("bright", value);
+}
+
+STATES.forEach((state, i) => {
+  const button = document.createElement("button");
+  const key = document.createElement("kbd");
+  const text = document.createElement("span");
+  const name = document.createElement("b");
+  const hint = document.createElement("small");
+  key.textContent = i + 1;
+  name.textContent = state.name;
+  name.style.color = state.color;
+  hint.textContent = state.hint;
+  text.append(name, hint);
+  button.append(key, text);
+  button.onclick = () => setState(state.name);
+  document.getElementById("states").append(button);
+});
+
+document.getElementById("play").onclick = togglePlay;
+document.getElementById("undo").onclick = undo;
+document.getElementById("reset").onclick = () => { history.push(points); points = [{ t: 0, state: "정상" }]; changed(); };
+document.getElementById("prev").onclick = () => open(index - 1);
+document.getElementById("next").onclick = () => open(index + 1);
+document.getElementById("finish").onclick = finish;
+document.getElementById("rate").onchange = event => { video.playbackRate = Number(event.target.value); event.target.blur(); };
+document.getElementById("bright").value = stored("bright", "2.5");
+document.getElementById("bright").oninput = applyBrightness;
+applyBrightness();
+
+timeline.onclick = event => {
+  const box = timeline.getBoundingClientRect();
+  video.pause();
+  video.currentTime = (event.clientX - box.left) / box.width * video.duration;
+};
+video.onloadedmetadata = () => { drawTimeline(); drawNow(); };
+video.ontimeupdate = drawNow;
+video.onseeked = drawNow;
+video.onplay = () => { document.getElementById("play").textContent = "멈춤"; };
+video.onpause = () => { document.getElementById("play").textContent = "재생"; };
+video.onerror = () => { document.getElementById("message").textContent = "영상을 재생하지 못했습니다."; };
+
+document.addEventListener("keydown", event => {
+  if (event.target.tagName === "SELECT" || event.target.tagName === "INPUT") return;
+  const number = Number(event.key);
+  if (number >= 1 && number <= STATES.length) { setState(STATES[number - 1].name); }
+  else if (event.code === "Space") { togglePlay(); }
+  else if (event.key === "ArrowLeft") { seek(event.shiftKey ? -0.5 : -FRAME); }
+  else if (event.key === "ArrowRight") { seek(event.shiftKey ? 0.5 : FRAME); }
+  else if (event.key === "Backspace") { undo(); }
+  else if (event.key === "Enter") { finish(); }
+  else { return; }
+  event.preventDefault();
+});
+
+(async () => {
+  clips = await (await fetch("/api/clips")).json();
+  const first = clips.findIndex(c => c.status !== "done");
+  open(first >= 0 ? first : 0);
+})();
+</script>
+</body>
+</html>
