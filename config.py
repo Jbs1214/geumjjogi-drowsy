@@ -27,6 +27,7 @@ DMD_ARCHIVES = Path(r"C:\Users\Woori\Downloads\DMD")      # DMD 졸음 세트 �
 # 산출물
 DATA = ROOT / "data"
 FEATURE_DIR = DATA / "features"         # 영상별 특징 parquet (원본 FPS)
+FEATURE_V8_DIR = DATA / "features_v8"   # v8로 판정할 영상의 특징. 좌우 눈 번호를 팀 기준으로 바꾼 뒤 다시 뽑았다 (README 실험 기록 11.04)
 HEAD_DIR = DATA / "head_down"           # 사람이 표시한 고개숙임 구간
 HEAD_DRAFT_DIR = DATA / "head_down_drafts"
 USER_LABEL_DIR = DATA / "user_labels"   # 사용자 영상에 사람이 표시한 상태 구간 (참고용 채점)
@@ -42,6 +43,9 @@ SPLIT = DATA / "split.csv"              # 운전자 단위 분할. 모든 실험
 NORM = DATA / "norm.json"               # train 창 특징의 평균·표준편차
 WINDOW_DIR = DATA / "windows"           # build_windows.py 결과
 RUNS = ROOT / "runs"
+
+# 얼굴 검출 (landmarks/extract.py). main·김민영 특징 CSV(v8 학습 창)와 같은 값이다. 다르면 얼굴을 잡는 프레임이 학습 때와 달라진다
+MIN_FACE_CONFIDENCE = 0.3
 
 # 창 (기획서 6·7번)
 FPS = 15.0                              # 공통 FPS. 원본이 25(NITYMED)·30(AI Hub)이어도 여기에 맞춘다

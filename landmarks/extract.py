@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 from mediapipe.tasks.python import BaseOptions, vision
 
+import config
 from landmarks.points import POINTS
 
 # 모델 파일은 저장소에 올리지 않는다. Google Drive에서 받아 models/에 둔다.
@@ -47,6 +48,9 @@ class LandmarkExtractor:
             num_faces=1,
             output_face_blendshapes=True,
             output_facial_transformation_matrixes=True,
+            min_face_detection_confidence=config.MIN_FACE_CONFIDENCE,
+            min_face_presence_confidence=config.MIN_FACE_CONFIDENCE,
+            min_tracking_confidence=config.MIN_FACE_CONFIDENCE,
         )
         self._landmarker = vision.FaceLandmarker.create_from_options(options)
         self._last_ms = -1

@@ -58,9 +58,25 @@ def augment(z: torch.Tensor, mean: torch.Tensor, std: torch.Tensor, gen: torch.G
     return out
 
 
+def norm_from_npz(path: Path) -> dict:
+    """김민영 build_windows의 norm.npz(face를 뺀 10개) → 11개 정규화 값. face 자리는 fit_norm과 같이 평균 0, 표준편차 1이다."""
+    with np.load(path) as saved:
+        columns, mean, std = saved["columns"].tolist(), saved["mean"], saved["std"]
+    expected = [name for name in config.FEATURES if name != config.FACE_COLUMN]
+    if columns != expected:
+        raise SystemExit(f"{path}의 열 순서가 config.FEATURES와 다릅니다: {columns}")
+    face = config.FEATURES.index(config.FACE_COLUMN)
+    return {"features": list(config.FEATURES), "mean": np.insert(mean, face, 0.0).tolist(),
+            "std": np.insert(std, face, 1.0).tolist(), "relative": False}
+
+
 def load_windows(folder: Path = config.WINDOW_DIR) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, dict]:
-    """창 폴더 → (X, y, 창 정보, 정규화 값). 폴더에 norm.json이 있으면 그것을, 없으면 data/norm.json을 쓴다."""
+    """창 폴더 → (X, y, 창 정보, 정규화 값). 폴더에 norm.json이 있으면 그것을, 없으면 data/norm.json을 쓴다.
+    김민영 build_windows 형식(창 정보가 windows.npz 안에, 정규화 값이 norm.npz)도 읽는다 (v8부터)."""
     data = np.load(folder / "windows.npz")
+    if not (folder / "windows.csv").exists():
+        info = pd.DataFrame({key: data[key] for key in ("clip", "driver_id", "source", "split", "start_sec")})
+        return data["X"], data["y"], info, norm_from_npz(folder / "norm.npz")
     info = pd.read_csv(folder / "windows.csv", encoding="utf-8-sig")
     norm_path = folder / "norm.json" if (folder / "norm.json").exists() else config.NORM
     norm = json.loads(norm_path.read_text(encoding="utf-8"))

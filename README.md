@@ -178,12 +178,14 @@ python -m unittest discover -t . -s tests
 | 11.03 | v7: 세션 기준 정규화(영상 시작 60초의 평소 값 대비), NITYMED + DMD 12명 | 카메라 각도·사람 차이 보정 | v6 대비 모든 선택 지표가 나아 v7 선택 | 육주영 |
 | 11.03 | 하품 판정 후보 4개 중 MAR 규칙 선택, 화면은 입 다문 뒤 0.5초면 하품 끝 | 모델 하품 구간 F1이 MAR 규칙보다 낮음 | 하품 구간 F1 0.810 → 0.838 | 육주영 |
 | 11.04 | 코드를 기획서 6장 폴더로 옮김. `dataset/convert_labels.py`의 DMD 규칙을 최종 라벨에 적힌 규칙대로 복원 | 로컬 원본 파일이 이전 규칙 버전으로 저장되어 있었음 | 다시 만든 DMD 라벨 15개가 최종 라벨과 같음, 테스트 45개 통과 | 육주영 |
+| 11.04 | 좌표 번호: `LEFT_EYE`를 362번 쪽으로(팀 코드와 같게), 얼굴 검출 신뢰도 0.3(`config.MIN_FACE_CONFIDENCE`) | v8 학습 창(김민영 특징 CSV)과 같은 입력. 362번 쪽이 블렌드셰이프 `blink_l`과 같은 눈 | 같은 클립에서 김민영 `ear_l`과 기존 `ear_r` 평균 차 0.002. 기존 `data/features`는 좌우가 반대라 v8 계열에 쓸 때 다시 뽑음 | 육주영 |
+| 11.04 | v8 1D-CNN: 김민영 창 묶음 `20261103_84e7bf4`(NITYMED 41클립, train 2,878·val 865 창, `norm.npz`), 세션 기준 정규화·DMD·AI Hub 없음. 창 제외는 끝 프레임 불확실·미검출, 불확실+미검출 30% 이상(임시 기준) | 기술서 v3 4.2: LSTM과 같은 창·분할·정규화 | Val macro F1 0.672 / 0.709 / 0.690(시드 42·43·44). 고개숙임은 train 16창이라 F1 0.45~0.52. 사건 평가는 김민영 평가 방식을 받은 뒤 | 육주영 |
 
 ### 팀 코드와 다른 점 (PR에서 정할 것)
 
 이 브랜치는 `landmarks/`, `rule_based/`, `sequence_model/build_windows.py`를 v3 버전으로 바꿨다. 그래서 팀원 테스트(`landmarks/tests`, `rule_based/tests`, `sequence_model/tests/test_build_windows.py`)가 실패한다.
 
-- **좌우 눈 번호:** v3는 `LEFT_EYE = (33, …)`, `RIGHT_EYE = (362, …)`(화면 기준)이고, 팀 코드는 반대다(`auto_label.py`에 맞춤). v3 가중치는 v3 순서로 학습했다.
+- **좌우 눈 번호:** 11.04부터 팀 코드와 같다(`LEFT_EYE = (362, …)`). v7까지의 가중치와 기존 `data/features`는 이전 순서(`LEFT_EYE = (33, …)`)로 만들었다.
 - **특징 열:** v3 `landmarks/features.py`는 `ear, mar, pitch, yaw, roll`을 계산하고, `face`·`ear_l`·`ear_r`·blendshape는 `landmarks/extract.py`가 만든다.
 - **단계 이름:** v3 `rule_based/alarm.py`에는 `CAUTION`이 없고 `WARN`·`DROWSY`를 쓴다.
 - **창 제외 사유:** v3 `build_windows.py`에는 `EXCLUDE_END_MISSING` 같은 제외 사유 상수가 없다.

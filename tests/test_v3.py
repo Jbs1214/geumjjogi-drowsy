@@ -630,5 +630,42 @@ class UserReviewTest(unittest.TestCase):
         self.assertEqual(int(states[110]), N)
 
 
+class MinyoungWindowsTest(unittest.TestCase):
+    """v8: 김민영 build_windows 형식(창 정보는 windows.npz 안, 정규화 값은 face를 뺀 norm.npz)을 읽는다."""
+
+    def write(self, root: Path, columns: list[str]) -> None:
+        X = np.random.default_rng(0).normal(size=(4, config.WINDOW_FRAMES, len(config.FEATURES))).astype(np.float32)
+        np.savez_compressed(root / "windows.npz", X=X, y=np.array([0, 1, 2, 3]), clip=np.array(["P1", "P1", "P2", "D1"]),
+                            driver_id=np.array(["d1", "d1", "d2", "dmd"]), source=np.array(["nitymed"] * 3 + ["dmd"]),
+                            split=np.array(["train", "train", "val", "unassigned"]), start_sec=np.array([0.0, 0.5, 0.0, 0.0]))
+        np.savez(root / "norm.npz", mean=np.arange(1, 11, dtype=np.float32), std=np.full(10, 2.0, dtype=np.float32),
+                 columns=np.array(columns))
+
+    def test_reads_info_and_norm(self):
+        from sequence_model.train import load_windows
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.write(root, [name for name in config.FEATURES if name != config.FACE_COLUMN])
+            X, y, info, norm = load_windows(root)
+        self.assertEqual(X.shape, (4, config.WINDOW_FRAMES, len(config.FEATURES)))
+        self.assertEqual(y.tolist(), [0, 1, 2, 3])
+        self.assertEqual(info["split"].tolist(), ["train", "train", "val", "unassigned"])
+        self.assertEqual(info["source"].tolist()[-1], "dmd")
+        face = config.FEATURES.index(config.FACE_COLUMN)
+        self.assertEqual((norm["mean"][face], norm["std"][face]), (0.0, 1.0))
+        self.assertEqual(np.delete(norm["mean"], face).tolist(), list(range(1, 11)))
+        self.assertEqual(len(norm["std"]), len(config.FEATURES))
+        self.assertFalse(norm["relative"])
+
+    def test_stops_on_column_mismatch(self):
+        from sequence_model.train import load_windows
+        columns = [name for name in config.FEATURES if name != config.FACE_COLUMN]
+        columns[0], columns[1] = columns[1], columns[0]
+        with tempfile.TemporaryDirectory() as folder:
+            self.write(Path(folder), columns)
+            with self.assertRaises(SystemExit):
+                load_windows(Path(folder))
+
+
 if __name__ == "__main__":
     unittest.main()
