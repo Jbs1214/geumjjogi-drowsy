@@ -81,3 +81,9 @@ outputs/
 *.log
 *.tmp
 *.bak
+
+# ===== 이 프로젝트 데이터·모델 (비공개 Google Drive로만 공유) =====
+data/
+share/
+models/*.task
+*.parquet

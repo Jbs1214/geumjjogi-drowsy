@@ -1,58 +1,60 @@
-These are local guidelines that apply to this repo only. Team-wide rules (branches, commits, working principles) follow `~/.claude/CLAUDE.md` (global guidelines). If this file conflicts with the global guidelines, this file takes precedence.
+# CLAUDE.md
 
-- **Repo:** https://github.com/Jbs1214/geumjjogi-drowsy
-- **Topic:** Drowsy driving warning
+These instructions apply to this repo only. Team-wide rules (branches, commits, working principles) follow `~/.claude/CLAUDE.md`; if the two differ, this file takes precedence.
 
----
+Drowsy driving detection: MediaPipe face features → rule-based judgment (MVP) → compare against 1D-CNN and LSTM on the same input.
 
-## 1. Approach
+## Where to look
 
-**Train YOLO on eye and mouth states, run inference on a webcam, and play a warning sound when the driver is drowsy.**
+Read the relevant file directly when needed. If it disagrees with this file, follow the source order below and fix this file.
 
-- Model: YOLO (`ultralytics`). Model size is [TBD].
-- 4 classes: `eye_open`, `eye_closed`, `mouth_open`, `mouth_closed`
-- Warning threshold: [TBD: how many seconds of closed eyes trigger a warning]
-- Display: OpenCV window
+- Numbers (window, FPS, thresholds, time criteria): `config.py`, `rule_based/config.py`, `best_params.json`  
+- DMD label conversion rules: `docs/spec.md` (technical specification) section 5.4 and `rules` in the converted label JSON. The JSON produced by `dmd_convert` is the reference for DMD labels; `dataset/convert_labels.py` must not apply DMD rules on its own (if it differs, fix the code).  
+- Design background, judgment logic, label JSON format, evaluation plan: `docs/plan.md` (project proposal), `docs/spec.md` (technical specification)  
+- Run commands, library versions, experiment log: `README.md`
 
-## 2. Data
+## Design rules
 
-**Do not put the raw data in the repo.**
+- Use the MediaPipe **Tasks API** (the Solutions API is forbidden). For both files and real time, use `VIDEO` mode and pass the frame timestamp.  
+- Compute head angles from the face transformation matrix, not from landmark points.  
+- Drowsiness stage is decided by **continuous eye-closure time**. Do not measure closure time by counting windows; measure it with a **timer based on frame time (frame number / fps)**, like `ClosureTimer` in `rule_based/alarm.py`. The rule-based path and the model use the same timer and the same settings.  
+- The model only answers "are the eyes closed right now?". **Uncertain is an exclusion mark, not a class.**  
+- If the eyes close during a yawn, judge it as eye closure (priority: eye closure \> yawn) and keep the timer running. Do not exclude eye closure during a yawn from the timer.  
+- Do not hard-code numbers, thresholds, or time criteria; keep them in config files.  
+- Draw the demo timeline x-axis in video time, and show current values (EAR, etc.) on screen.
 
-- Source: AI Hub #173 "Driver State Information Videos for Preventing Drowsy Driving" (졸음운전 예방을 위한 운전자 상태 정보 영상)
-- Training: images (21GB) + label JSON. Use only the data that has bounding box labels (real roads and controlled environments). Number of images to use is [TBD].
-- Videos (100GB): back up to an external hard drive. Whether to use them for training is [TBD].
-- Only 1 person keeps the raw data (images and videos): [TBD: data keeper]. Whether to upload to Google Drive will be decided after discussing with the team [TBD].
+## Data and label rules
 
-## 3. Environment
+- DMD eye closure counts `close` and `closing` as closed and `opening` as open (Basis A). Evaluation also reports Basis B, which counts `opening` as closed too.  
+- Blinks also count as eye closure (short closures stay in `eye_closed`). Existing NITYMED labels, however, keep blinks as normal; re-labeling is postponed until after the presentation, and newly reviewed files use this rule. Keeping blinks from becoming warnings is the timer's job.  
+- Spans where the head is lowered so far that the eyes are not visible go in `head_down` and are removed from `eye_closed`.  
+- Make DMD labels only with the conversion tool, and record the conversion rules in `rules`. If the conversion code differs from `docs/spec.md` section 5.4 or the label's `rules`, fix the code. Keep `label_status` of converted DMD labels as `auto`.  
+- AI Hub data is not used for now. The team will announce it if that changes.  
+- Human labels (re-review, head-down marking, webcam ground truth, driver IDs) are made by humans. Claude does not mark them on their behalf.  
+- Auto labels (`auto_label`) are the output of rules, so **never use them as evaluation ground truth**.  
+- Do not change the `driver_id` of labels that already exist (NITYMED `md01` format; DMD uses the driver number from the file name). Never let two sources produce the same string.  
+- Split by **driver (`driver_id`)**, and have every experiment share the saved split file (`data/split.csv`). Compute normalization values from train only.  
+- Write the evaluation criteria in `README.md` before looking at results. Use the final judgment data (Test2) only once, and never use it to choose models or thresholds.
 
-- conda environment: `geumjjogi-drowsy`
-- Shared environment settings (Python, GPU, CUDA, etc.) follow the global guidelines in `~/.claude/CLAUDE.md`.
+## Run order
 
-## 4. How to Run
+`auto_label.extract` → `auto_label.head_review.server` (human review) → `dataset.convert_labels` → `sequence_model.build_windows` → `sequence_model.train` → `eval.evaluate` → `eval.report` → `demo/`
 
-| Step | File | What it does |
-| --- | --- | --- |
-| 1 | `convert.py` | Convert AI Hub label JSON to YOLO format (4 classes) |
-| 2 | `train.py` | Train YOLO and save the weights |
-| 3 | `app.py` | Run webcam inference and play a warning sound when drowsy (OpenCV window) |
+- Run commands from the repo root as `python -m <folder>.<file>`. Tests: `python -m unittest discover -t . -s tests`  
+- Priority: ① rule-based MVP → ② 1D-CNN/LSTM comparison → ③ (optional) ONNX. Do not build sequence models before the MVP.
 
-```bash
-conda activate geumjjogi-drowsy
-python convert.py
-python train.py
-python app.py
-```
+## Do not
 
-## 5. Weight Versioning
+- Do not upload videos, features, labels, weights, or `models/face_landmarker.task` to the repo (share via the private Google Drive).  
+- Do not publish material processed from DMD (cut videos, converted labels, overlay videos, weights trained on DMD). Make public demo videos from NITYMED and our own footage.  
+- Do not add libraries that are not in the README library list without sharing with the team first.
 
-- Naming: `best_model_v01.pt`, `best_model_v02.pt`, ... Bump the version on every training run.
-- Do not upload weights to GitHub. Share them on Google Drive.
+## Records
 
-## 6. Libraries
+- When you change landmark indices, thresholds, window, judgment interval, or label conversion rules, record the reason and result in the **experiment log** table in `README.md`.  
+- When retraining, use a new name for `--tag`.
 
-- **Agreed to use:**
-    - `ultralytics` — YOLO training and inference
-    - `torch`, `torchvision` (for CUDA 11.8) — GPU training. Versions are [TBD: record after confirming installation]
-    - `opencv-python` — read webcam frames and display output
-    - `pygame` — play the warning sound
-- **Agreed not to use:** [TBD]
+## Environment
+
+- conda environment `geumjjogi-drowsy`. Train models on GPU, extract features on CPU.  
+- Landmark extraction is slow, so run it in parts and save the result tables (`data/features/*.parquet`) for reuse.
