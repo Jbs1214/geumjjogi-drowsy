@@ -38,6 +38,11 @@ def segments_from_labels(t: np.ndarray, labels: np.ndarray, step: float, classes
     return {c: [(float(t[s]), float(t[e] + step)) for s, e in zip(*runs(labels == c))] for c in classes}
 
 
+def segments_within(segments: list[tuple[float, float]], start: float, end: float) -> list[tuple[float, float]]:
+    """구간 목록 → start~end에 걸친 구간만 그 범위로 자른 목록. 창이 판정하지 못한 시간을 채점에서 뺀다."""
+    return [(max(s, start), min(e, end)) for s, e in segments if s < end and e > start]
+
+
 def match_segments(true: list[tuple[float, float]], pred: list[tuple[float, float]],
                    tolerance: float = LABEL_TOLERANCE_SEC) -> tuple[int, int, int]:
     """정답·예측 구간을 1:1로 짝지어 (맞힌 수, 잘못 낸 수, 놓친 수)를 센다. tolerance초 이내로 닿으면 찾은 것으로 본다."""

@@ -1,0 +1,11 @@
+# 로컬 시연 설정. 얼굴 영상이 다루어지므로 이 PC 밖에서 접속할 수 없게 하고 사용 통계도 보내지 않는다.
+[server]
+address = "127.0.0.1"
+headless = true
+fileWatcherType = "none"
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
