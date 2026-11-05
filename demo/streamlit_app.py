@@ -34,7 +34,8 @@ class LiveSession:
         from landmarks.extract import LandmarkExtractor
         from sequence_model.models import Predictor
         from sequence_model.postprocess import for_weights
-        from demo.webcam import Beeper, LiveJudge, LiveRule, load_yawn
+        from demo.webcam import Beeper, LiveJudge, LiveRule
+        from sequence_model.train_yawn import load_yawn
 
         predictor = Predictor(weights)
         self.post = for_weights(weights, predictor.name)
@@ -72,9 +73,10 @@ class LiveSession:
 
         with self.lock:
             j = self.judge
+            history = [(t, -1, stage, -1, closed) for t, stage, closed in self.rule.history] if j.final else list(j.history)
             rate = (len(self.stamps) - 1) / (self.stamps[-1] - self.stamps[0]) if len(self.stamps) > 1 else 0.0
             return {"state": config.CLASSES[j.shown] if j.shown >= 0 else "준비 중", "stage": STAGE_NAMES[alarm_stage(j, self.rule)], "rule_stage": STAGE_NAMES[self.rule.stage],
-                    "closed_sec": self.rule.closed_sec if j.final else j.closed_sec, "rate": rate, "events": list(j.events), "history": list(j.history),
+                    "closed_sec": self.rule.closed_sec if j.final else j.closed_sec, "rate": rate, "events": list(j.events), "history": history, "final": j.final,
                     "seconds": j.history[-1][0] - j.history[0][0] if j.history else 0.0}
 
     def finish(self) -> str:
@@ -110,6 +112,7 @@ def main() -> None:
     if st.sidebar.button("새 운전 시작 (기록 지우기)"):
         load.clear()
     session = load(str(default_weights()))
+    session.judge.mask = st.sidebar.checkbox("마스크 착용 (하품 감지 끄기)", value=session.judge.mask)
     st.caption(f"모델 {session.weights.parent.name}/{session.weights.name}, 후처리 {session.post.label()}")
 
     def callback(frame: av.VideoFrame) -> av.VideoFrame:
@@ -128,7 +131,7 @@ def main() -> None:
 
     def show(snap: dict, draw_charts: bool) -> None:
         with area.container():
-            items = (("모델 판정", snap["state"]), ("모델 경고", snap["stage"]), ("연속 눈 감김", f"{snap['closed_sec']:.1f}초"),
+            items = (("모델 판정", snap["state"]), ("최종 경고" if snap["final"] else "모델 경고", snap["stage"]), ("연속 눈 감김", f"{snap['closed_sec']:.1f}초"),
                      ("규칙 경고 (EAR 0.48)", snap["rule_stage"]), ("처리 속도", f"{snap['rate']:.1f} FPS"), ("운전 시간", f"{snap['seconds'] / 60:.1f}분"))
             for i in range(0, len(items), 2):
                 for column, (name, value) in zip(st.columns(2), items[i:i + 2]):

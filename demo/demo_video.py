@@ -1,7 +1,7 @@
-# 영상 파일 → 4클래스 판정, 눈감김 타이머, 경고, 현재 EAR·MAR을 겹쳐 그린 결과 영상. 프레임마다 그 시각까지 끝난 판정만 그린다.
+# 영상 파일 → 최종 구성(규칙 눈 감김, 하품 전용 모델) 또는 4클래스 판정, 눈감김 타이머, 경고, 현재 EAR·MAR을 겹쳐 그린 결과 영상. 프레임마다 그 시각까지 끝난 판정만 그린다.
 # 결과 영상에는 얼굴이 나오므로 이 PC에만 둔다.
 #
-# 실행: python -m demo.demo_video --input 영상.mp4 --weights runs/v1/cnn1d_v01.pt [--features 특징.parquet] [--out 결과.mp4]
+# 실행: python -m demo.demo_video --input 영상.mp4 --weights runs/v1/cnn1d_v01.pt [--features 특징.parquet] [--out 결과.mp4] [--yawn-weights runs/yawn1/cnn1d_v01.pt] [--mask]
 
 import argparse
 import os
@@ -19,8 +19,11 @@ from PIL import Image, ImageDraw, ImageFont
 import config
 from sequence_model.models import Predictor
 from sequence_model.postprocess import NONE, Post, display_classes, for_weights, yawn_classes
-from rule_based.alarm import DROWSY, ClosureTimer, stage_starts, timer_stages
-from eval.evaluate import ear48_closed, grid_mouth_closed, grid_yawning, model_frames, model_timer_unknown, rule_timer_inputs
+from sequence_model.train_yawn import YawnPredictor, load_yawn
+from rule_based.alarm import DROWSY, WARN, ClosureTimer, stage_starts, timer_stages
+from rule_based.alerts import YawnRepeat
+from rule_based.common import runs
+from eval.evaluate import ear48_closed, grid_mouth_closed, grid_yawning, model_frames, model_probs, model_timer_unknown, rule_timer_inputs
 
 FONT = Path("C:/Windows/Fonts/malgun.ttf")
 CLASS_RGB = {-1: (110, 110, 110), config.NORMAL: (46, 160, 67), config.CLOSED: (218, 54, 51), config.YAWN: (156, 98, 222), config.HEAD: (230, 140, 30)}
@@ -36,6 +39,25 @@ def elapsed(times: np.ndarray, closed: np.ndarray, grace: float = 0.0, unknown: 
     for i, (t, c, u) in enumerate(zip(times, closed, unknown)):
         timer.update(float(t), bool(c), bool(u))
         out[i] = timer.elapsed
+    return out
+
+
+def yawn_flags(df: pd.DataFrame, predictor: YawnPredictor) -> np.ndarray:
+    """특징 표 → 15 FPS 격자별 하품 여부. 켜짐이 YAWN_MODEL_MIN_SEC 이어진 뒤부터 참이다 (demo.webcam.LiveJudge와 같다)."""
+    times, probs, judged = model_probs(df, predictor)
+    on = (probs[:, 0] >= config.YAWN_ENTER) & judged
+    out = np.zeros(len(on), dtype=bool)
+    for start, end in zip(*runs(on)):
+        out[start:end + 1] = times[start:end + 1] - times[start] >= config.YAWN_MODEL_MIN_SEC - 1e-9
+    return out
+
+
+def yawn_alerts(times: np.ndarray, yawning: np.ndarray) -> np.ndarray:
+    """격자별 하품 여부 → 하품 주의를 띄우는 격자."""
+    repeat, out = YawnRepeat(0.0), np.zeros(len(times), dtype=bool)
+    for i, (t, on) in enumerate(zip(times, yawning)):
+        repeat.update(float(t), bool(on))
+        out[i] = repeat.active(float(t))
     return out
 
 
@@ -97,18 +119,31 @@ def strip(times: np.ndarray, values: np.ndarray, colors: dict, width: int, heigh
     return out
 
 
-def render(video: Path, df: pd.DataFrame, predictor: Predictor, out: Path, post: Post = NONE) -> dict:
+def render(video: Path, df: pd.DataFrame, predictor: Predictor, out: Path, post: Post = NONE,
+           yawn_predictor: YawnPredictor | None = None, mask: bool = False) -> dict:
     times, classes = model_frames(df, predictor, post)
     # 타이머 입력은 파일 평가와 같다: 판정 불가·고개 숙임은 직전 눈 감김이 0.5초 이상이면 이어서 센다 (최종 기획서 5-1·5-3)
     closed, unknown = classes == config.CLOSED, model_timer_unknown(classes)
     stages = timer_stages(times, closed, grace_sec=post.grace, unknown=unknown, carry_max_sec=post.carry_max)
     seconds = elapsed(times, closed, post.grace, unknown, post.carry_max)
     # 화면에는 0.5초보다 짧은 눈감김(깜빡임)과 입을 다문 지 0.5초가 지난 하품을 정상으로 보인다. 경고 단계는 위에서 이미 구했다
-    mouth = grid_mouth_closed(df)
-    classes = display_classes(yawn_classes(classes, mouth, grid_yawning(df), post.yawn_mode), seconds, mouth_closed=mouth)
     frame_t = df["t"].to_numpy(dtype=float)
     fps_src = 1 / float(np.median(np.diff(frame_t)))
-    rule = timer_stages(frame_t, ear48_closed(df, fps_src), **rule_timer_inputs(df))
+    rule_closed, rule_inputs = ear48_closed(df, fps_src), rule_timer_inputs(df)
+    rule = timer_stages(frame_t, rule_closed, **rule_inputs)
+    stage_t = times
+    if yawn_predictor is None:
+        mouth = grid_mouth_closed(df)
+        classes = display_classes(yawn_classes(classes, mouth, grid_yawning(df), post.yawn_mode), seconds, mouth_closed=mouth)
+        if mask:
+            classes[classes == config.YAWN] = config.NORMAL
+    else:       # 최종 구성: 경고는 규칙 눈 감김 단계와 하품 알림 중 높은 쪽 (기술서 3.2)
+        yawning = yawn_flags(df, yawn_predictor) & (not mask)
+        classes = display_classes(np.where(classes == config.YAWN, config.NORMAL, classes), seconds)
+        classes[(classes == config.NORMAL) & yawning] = config.YAWN
+        alerts = yawn_alerts(times, yawning)[np.clip(np.searchsorted(times, frame_t, side="right") - 1, 0, None)]
+        stage_t, stages = frame_t, np.where(alerts, np.maximum(rule, WARN), rule)
+        seconds = elapsed(frame_t, rule_closed, unknown=rule_inputs["unknown"])
     ear, mar = df["ear"].to_numpy(dtype=float), df["mar"].to_numpy(dtype=float)
 
     capture = cv2.VideoCapture(str(video))
@@ -117,7 +152,7 @@ def render(video: Path, df: pd.DataFrame, predictor: Predictor, out: Path, post:
     duration = len(df) / fps_src
     scale = max(width / 1280, 0.5)
     row = max(round(20 * scale), 8)
-    strips = [strip(times, classes, CLASS_RGB, width, row, duration, -1), strip(times, stages, dict(enumerate(STAGE_RGB)), width, row, duration, 0)]
+    strips = [strip(times, classes, CLASS_RGB, width, row, duration, -1), strip(stage_t, stages, dict(enumerate(STAGE_RGB)), width, row, duration, 0)]
     out.parent.mkdir(parents=True, exist_ok=True)
     writer = None
     for backend, code in ((cv2.CAP_MSMF, "H264"), (cv2.CAP_FFMPEG, "mp4v")):
@@ -132,8 +167,8 @@ def render(video: Path, df: pd.DataFrame, predictor: Predictor, out: Path, post:
                 break
             t = (index + 1) / fps
             i = min(int(np.searchsorted(frame_t, t, side="right")) - 1, len(df) - 1)
-            stage = int(at(times, stages, t, 0))
-            blend(frame, panel(int(at(times, classes, t, -1)), stage, float(at(times, seconds, t, 0.0)), int(at(frame_t, rule, t, 0)),
+            stage = int(at(stage_t, stages, t, 0))
+            blend(frame, panel(int(at(times, classes, t, -1)), stage, float(at(stage_t, seconds, t, 0.0)), int(at(frame_t, rule, t, 0)),
                                float(ear[max(i, 0)]), float(mar[max(i, 0)]), scale), round(16 * scale), round(16 * scale))
             if stage == DROWSY:
                 cv2.rectangle(frame, (0, 0), (width - 1, height - 1), STAGE_RGB[DROWSY][::-1], max(round(12 * scale), 2))
@@ -149,26 +184,29 @@ def render(video: Path, df: pd.DataFrame, predictor: Predictor, out: Path, post:
         writer.release()
     found = {name: np.round(times[(classes == value) & ~np.r_[False, (classes == value)[:-1]]], 2).tolist() for name, value in
              (("눈감김", config.CLOSED), ("하품", config.YAWN), ("고개숙임", config.HEAD))}
-    return {"frames": index, "starts": found, "drowsy": np.round(stage_starts(times, stages, DROWSY), 2).tolist(),
+    return {"frames": index, "starts": found, "drowsy": np.round(stage_starts(stage_t, stages, DROWSY), 2).tolist(),
             "rule_drowsy": np.round(stage_starts(frame_t, rule, DROWSY), 2).tolist()}
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="영상 파일로 4클래스 판정 데모를 만든다")
+    parser = argparse.ArgumentParser(description="영상 파일로 판정 데모를 만든다")
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--weights", type=Path, required=True)
     parser.add_argument("--features", type=Path, help="특징 parquet. 없으면 data/features/<이름>.parquet")
     parser.add_argument("--out", type=Path, help="결과 영상. 없으면 runs/demo/<이름>_v3.mp4")
+    parser.add_argument("--yawn-weights", type=Path, default=config.YAWN_WEIGHTS, help="하품 전용 모델 가중치. 파일이 없으면 4클래스 판정만 쓴다")
+    parser.add_argument("--mask", action="store_true", help="마스크 착용: 하품 표시와 하품 알림을 끈다")
     args = parser.parse_args()
     df = pd.read_parquet(args.features or config.FEATURE_DIR / f"{args.input.stem}.parquet")
     out = args.out or config.RUNS / "demo" / f"{args.input.stem}_v3.mp4"
     predictor = Predictor(args.weights)
     post = for_weights(args.weights, predictor.name)
-    result = render(args.input, df, predictor, out, post)
-    print(f"저장: {out}, {result['frames']}프레임, 후처리 {post.label()}")
+    yawn_predictor = load_yawn(args.yawn_weights)
+    result = render(args.input, df, predictor, out, post, yawn_predictor, args.mask)
+    print(f"저장: {out}, {result['frames']}프레임, 후처리 {post.label()}, 하품 전용 {args.yawn_weights if yawn_predictor else '없음(4클래스 판정)'}")
     for name, starts in result["starts"].items():
         print(f"  모델 {name} 시작 시각: {starts}")
-    print(f"  모델 졸음 경고: {result['drowsy']}, 규칙 EAR 0.48 졸음 경고: {result['rule_drowsy']}")
+    print(f"  {'최종' if yawn_predictor else '모델'} 졸음 경고: {result['drowsy']}, 규칙 EAR 0.48 졸음 경고: {result['rule_drowsy']}")
 
 
 if __name__ == "__main__":

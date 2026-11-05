@@ -28,7 +28,7 @@ DMD_ARCHIVES = Path(r"C:\Users\Woori\Downloads\DMD")      # DMD 졸음 세트 �
 MINI_DATA = Path(r"C:\Users\Woori\Desktop\datas\mini-data")
 MINI_NITYMED_LABELS = MINI_DATA / "nitymed" / "labels" / "nitymed_labels_20261103"
 MINI_BUNDLE = MINI_DATA / "dmd" / "labels" / "20261103_84e7bf4"     # DMD labels_v2·특징, NITYMED 특징
-MINI_DMD_VAL_DRIVERS = 2                # DMD 운전자 6명 중 val 수. 나머지는 train, DMD test는 신규 7명 몫으로 남긴다
+MINI_DMD_VAL_DRIVERS = 2                # DMD 운전자 6명 중 val 수. 나머지는 train이다
 
 # 산출물
 DATA = ROOT / "data"

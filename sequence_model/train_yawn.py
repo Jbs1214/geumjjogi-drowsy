@@ -48,6 +48,11 @@ class YawnPredictor:
         return np.concatenate(out) if out else np.zeros((0, 1))
 
 
+def load_yawn(path: Path | None) -> YawnPredictor | None:
+    """하품 전용 가중치. 파일이 없으면 None이고 4클래스 판정만 쓴다."""
+    return YawnPredictor(path) if path is not None and Path(path).exists() else None
+
+
 def f1(truth: np.ndarray, guess: np.ndarray) -> float:
     tp = float((truth & guess).sum())
     return 2 * tp / max(float(truth.sum() + guess.sum()), 1.0)

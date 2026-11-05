@@ -470,6 +470,35 @@ class YawnModelTest(unittest.TestCase):
         self.assertTrue(np.allclose(judge.yawn_repeat.times, [a + config.YAWN_MODEL_MIN_SEC for a, _ in found], atol=0.21))
 
 
+class MaskAndFileTest(unittest.TestCase):
+    def test_mask_turns_off_yawn(self):
+        from demo.webcam import LiveJudge
+        df = features(300, fps=15.0)
+        df["jaw_open"] = 0.0
+        df.loc[100:129, "jaw_open"] = 1.0
+        judge = LiveJudge(YawnModelTest.Normal(), yawn_predictor=YawnModelTest.EndJaw(), mask=True)
+        self.assertNotIn(config.YAWN, YawnModelTest.stream(judge, df))
+        self.assertEqual(judge.yawn_repeat.times, [])
+
+    def test_file_flags_match_live(self):
+        from demo.demo_video import yawn_alerts, yawn_flags
+        from demo.webcam import LiveJudge
+        from sequence_model.build_windows import feature_matrix
+        df = features(300, fps=15.0)
+        df["jaw_open"] = 0.0
+        df.loc[100:129, "jaw_open"] = 1.0
+        df.loc[200:203, "jaw_open"] = 1.0
+        flags = yawn_flags(df, YawnModelTest.EndJaw())
+        judge, live = LiveJudge(YawnModelTest.Normal(), yawn_predictor=YawnModelTest.EndJaw()), []
+        for t, vector in zip(df["t"], feature_matrix(df)):
+            judge.update(float(t), vector)
+            live.append(judge.yawning)
+        self.assertEqual(flags[:-1].tolist(), live[:-1])
+        times = np.arange(600) / 15
+        yawning = (np.arange(600) % 150) < 30
+        self.assertTrue(yawn_alerts(times, yawning).any())      # 세 번째 하품에서 하품 주의
+
+
 class DmdTest(unittest.TestCase):
     @staticmethod
     def openlabel():

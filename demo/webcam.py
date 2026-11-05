@@ -50,15 +50,6 @@ BASELINE_EVERY_SEC = 0.5    # 평소 EAR을 다시 구하는 간격
 BEEP_HZ, BEEP_MS, BEEP_GAP_SEC = 1000, 300, 0.2
 
 
-def load_yawn(path: Path | None):
-    """하품 전용 가중치. 파일이 없으면 None이고 4클래스 판정만 쓴다."""
-    from sequence_model.train_yawn import YawnPredictor
-
-    if path is None or not Path(path).exists():
-        return None
-    return YawnPredictor(path)
-
-
 def alarm_stage(judge: "LiveJudge", rule: "LiveRule") -> int:
     """화면과 경고음의 단계. 최종 구성(기술서 0장)은 규칙 눈 감김 단계와 하품 알림 중 높은 쪽이고, 아니면 모델 단계다."""
     if not judge.final:
@@ -78,15 +69,16 @@ class LiveJudge:
     """프레임을 하나씩 받아 15 FPS 격자마다 눈감김 타이머를 잰다. 모델은 0.2초(격자 JUDGE_EVERY칸)마다 판정하고 사이는 유지한다.
     타이머 입력은 파일 평가(eval.evaluate.model_scores)와 같다: 판정 불가·고개숙임은 직전 눈 감김이 0.5초 이상이면 이어서 센다
     (최종 기획서 5-1·5-3). 세션 기준 가중치(v7~)면 특징을 session.SessionBaseline으로 바꾼다.
-    yawn_predictor를 주면 최종 구성이다: 하품은 하품 전용 모델이 맡고, 입 모양과 4클래스 하품 출력은 쓰지 않는다."""
+    yawn_predictor를 주면 최종 구성이다: 하품은 하품 전용 모델이 맡고, 입 모양과 4클래스 하품 출력은 쓰지 않는다.
+    mask가 참이면 마스크 착용이다: 하품 표시와 하품 알림을 끈다 (기술서 3.2)."""
 
-    def __init__(self, predictor, post: Post = NONE, yawn_predictor=None) -> None:
+    def __init__(self, predictor, post: Post = NONE, yawn_predictor=None, mask: bool = False) -> None:
         from landmarks.session import SessionBaseline
 
         if yawn_predictor is not None and yawn_predictor.relative != getattr(predictor, "relative", False):
             raise SystemExit("하품 전용 모델과 4클래스 모델의 입력 기준(세션 기준 여부)이 다릅니다")
         self._predictor, self._yawn_predictor = predictor, yawn_predictor
-        self.final = yawn_predictor is not None
+        self.final, self.mask = yawn_predictor is not None, mask
         self._yawn_on, self._yawn_since = False, None
         self.yawning = False
         self._baseline = SessionBaseline() if getattr(predictor, "relative", False) else None
@@ -144,9 +136,11 @@ class LiveJudge:
                 yawned = yawn_classes(np.array([state]), np.array([grid_mouth]), np.array([grid_rule]), self._post.yawn_mode)
                 self.shown = int(display_classes(yawned, np.array([self.closed_sec]), mouth_closed=np.array([grid_mouth]))[0])
             self.history.append((g, state, self.stage, self.shown, self.closed_sec))
+            if self.mask and self.shown == config.YAWN:
+                self.shown = config.NORMAL
             if self.stage > before and not self.final:
                 self.events.append(Event(g, "졸음" if self.stage == DROWSY else "주의"))
-            if self.yawn_repeat.update(g, self.yawning if self.final else self.shown == config.YAWN):
+            if self.yawn_repeat.update(g, not self.mask and (self.yawning if self.final else self.shown == config.YAWN)):
                 self.events.append(Event(g, "하품 주의"))
             if j >= 0 and self.unknown_watch.update(g, state < 0):
                 self.events.append(Event(g, "확인 필요"))
@@ -173,7 +167,7 @@ class LiveRule:
         self._timer = ClosureTimer()
         self._head = HeadDown()
         self.ready, self.stage, self.closed_sec = False, NORMAL, 0.0
-        self.history: list[tuple[float, int]] = []
+        self.history: list[tuple[float, int, float]] = []       # (시각, 단계, 연속 눈 감김 초)
 
     def update(self, t: float, found: bool, ear: float, pitch: float = float("nan"), ear_l: float = float("nan"), ear_r: float = float("nan")) -> None:
         """판정 불가(얼굴이 안 보임)와 고개 숙임(pitch 규칙)은 직전 눈 감김이 0.5초 이상이면 이어서 센다 (최종 기획서 5-1·5-3)."""
@@ -191,7 +185,7 @@ class LiveRule:
         self.closed_sec = self._timer.elapsed
         if self._events is not None and self.stage > before:
             self._events.append(Event(t, "졸음" if self.stage == DROWSY else "주의"))
-        self.history.append((t, self.stage))
+        self.history.append((t, self.stage, self.closed_sec))
 
 
 class Beeper:
@@ -299,9 +293,10 @@ def record_blind(source: str, out: Path, show: bool, max_seconds: float | None) 
 
 
 def run(source: str, weights: Path, show: bool, sound: bool, max_seconds: float | None, record: Path | None = None,
-        yawn_weights: Path | None = config.YAWN_WEIGHTS) -> dict:
+        yawn_weights: Path | None = config.YAWN_WEIGHTS, mask: bool = False) -> dict:
     from landmarks.extract import LandmarkExtractor
     from sequence_model.models import Predictor
+    from sequence_model.train_yawn import load_yawn
 
     capture, live, file_fps = open_source(source)
     writer = TimedWriter(record) if record else None
@@ -309,7 +304,7 @@ def run(source: str, weights: Path, show: bool, sound: bool, max_seconds: float 
     post = for_weights(weights, predictor.name)
     yawn_predictor = load_yawn(yawn_weights)
     print(f"모델 {weights}, 후처리 {post.label()}, 하품 전용 {yawn_weights if yawn_predictor else '없음(4클래스 판정)'}", flush=True)
-    judge = LiveJudge(predictor, post, yawn_predictor)
+    judge = LiveJudge(predictor, post, yawn_predictor, mask)
     rule, mouth_watch, yawn_tracker = LiveRule(judge.events if judge.final else None), MouthClosedWatch(), YawnTracker()
     extractor = LandmarkExtractor()
     beeper = Beeper() if sound and show else None
@@ -380,6 +375,7 @@ def main() -> None:
     parser.add_argument("--input", help="웹캠 대신 영상 파일. 파일 판정과 같은지 확인할 때 쓴다")
     parser.add_argument("--weights", type=Path, default=DEFAULT_WEIGHTS)
     parser.add_argument("--yawn-weights", type=Path, default=config.YAWN_WEIGHTS, help="하품 전용 모델 가중치. 파일이 없으면 4클래스 판정만 쓴다")
+    parser.add_argument("--mask", action="store_true", help="마스크 착용: 하품 표시와 하품 알림을 끈다")
     parser.add_argument("--no-window", action="store_true", help="화면 없이 처리한다")
     parser.add_argument("--mute", action="store_true", help="경고음을 끈다")
     parser.add_argument("--max-seconds", type=float, help="입력 시각으로 이 시간까지만 처리한다")
@@ -392,7 +388,7 @@ def main() -> None:
         print(f"Test2 녹화: {result['saved']} ({result['saved_frames']}프레임, {result['saved_frames'] / config.RECORD_FPS:.1f}초). 판정 결과는 만들지 않았다")
         return
     record = record_path("webcam") if args.record == "webcam" else None
-    result = run(source, args.weights, not args.no_window, not args.mute, args.max_seconds, record, args.yawn_weights)
+    result = run(source, args.weights, not args.no_window, not args.mute, args.max_seconds, record, args.yawn_weights, args.mask)
     if record:
         print(f"Val2 녹화: {record}")
     print(f"프레임 {result['frames']}개, {result['seconds']:.1f}초, 평균 처리 {result['fps']:.1f} FPS, "
