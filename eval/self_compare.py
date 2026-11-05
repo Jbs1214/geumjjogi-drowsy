@@ -15,13 +15,13 @@ import pandas as pd
 import config
 from demo.demo_video import yawn_flags
 from demo.webcam import RULE_MIN_SEC, BASELINE_EVERY_SEC
-from eval.evaluate import (BASELINE_EAR_QUANTILE, EAR_RATIO, TARGETS, clip_score, grid_mouth_closed, grid_yawning, head_down, load_clip, model_probs,
+from eval.evaluate import (BASELINE_EAR_QUANTILE, EAR_RATIO, TARGETS, clip_score, head_down, load_clip, model_probs,
                            model_timer_unknown, rule_timer_inputs)
 from eval.metrics import ALERT_TOLERANCE_SEC, prf
 from eval.yawn_compare import detections
 from rule_based.yawn import yawning
 from sequence_model.models import Predictor
-from sequence_model.postprocess import Post, decide, shown_yawn
+from sequence_model.postprocess import Post, decide
 from sequence_model.train_yawn import YawnPredictor
 
 POST = Post(enter=0.6, exit=0.4)
@@ -87,14 +87,17 @@ def score_clip(clip: dict, events: list[dict], fourclass: dict, yawn_runs: list)
     rule_flags = {"눈감김": closed, "하품": mar_yawn, "고개숙임": down}
     rows = [rows_for("규칙", clip, events, t, rule_flags, step, rule_timer_inputs(df)["unknown"], rule_found, 0)]
 
-    mouths = grid_mouth_closed(df), grid_yawning(df)
     for name, predictors in fourclass.items():
         for seed, predictor in enumerate(predictors):
             times, probs, judged = model_probs(df, predictor)
             classes = decide(probs, judged, POST)
             flags = {label: classes == value for label, value in TARGETS.items()}
-            flags["하품"] = shown_yawn(classes, *mouths, POST.yawn_mode)
-            found = detections(times, flags["하품"], config.YAWN_MODEL_MIN_SEC)
+            # 화면 표시용 판정(shown_yawn)은 입을 다문 지 0.5초가 지나면 하품을 꺼서 손 가린 하품을 지운다. 모델 출력으로 채점한다
+            on = (probs[:, config.YAWN] >= config.YAWN_ENTER) & judged
+            found = detections(times, on, config.YAWN_MODEL_MIN_SEC)
+            flags["하품"] = np.zeros(len(times), dtype=bool)
+            for a, b in found:
+                flags["하품"][(times >= a) & (times <= b)] = True
             rows.append(rows_for(name, clip, events, times, flags, 1 / config.FPS, model_timer_unknown(classes), found, seed))
 
     for seed, predictor in enumerate(yawn_runs):
