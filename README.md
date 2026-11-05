@@ -231,6 +231,7 @@ python -m unittest discover -t . -s tests
 | 11.05 | `base1`: 창 요약 특징(평균·표준편차·최솟값·최댓값 44개) + 로지스틱 회귀·랜덤 포레스트 기준선(`sequence_model/baseline.py`, `origin/main`의 코드를 이 구조로 옮김). 데이터 `windows_sig3`, `scikit-learn` 1.9.1 추가 | 기술서 4.2 기준선 | val 창 macro F1(전체/NITYMED/DMD): 로지스틱 0.447/0.472/0.390, 랜덤 포레스트 0.417/0.434/0.533, `sig4` 1D-CNN 0.690/0.700/0.601, LSTM 0.607/0.637/0.566. 두 신경망 모두 기준선보다 높음 | 장범수 |
 | 11.05 | 규칙 눈 감음 임계값을 0.48 × P90에서 `best_params.json`의 `ear_ratio`(0.6) × P75로 변경. 파일을 `auto_label/best_params.json`으로 저장소에 포함 | 기술서 3.1·5.6·9.1이 이 파일 하나로 공유하도록 정함 | val 실시간 규칙 주의 재현율·시간당 오경보: NITYMED 0.595/48 → 0.690/48, DMD A 0.815/19.6 → 0.926/26.2, B 0.533/6.5 → 0.600/13.1. 값은 AI Hub 30클립에서 고른 것이고 val로 고르지 않음. 이 행 이전의 규칙 비교 수치는 0.48 기준 | 장범수 |
 | 11.05 | 분할과 파이프라인 기준 확정: `feat/seq-pipeline` 구조에 `main` 병합. 김민영 평가를 `eval/window_eval.py`로 옮기고 `train_lstm`·`share_lstm`을 이 구조에 연결. DMD 분할은 train 11명·val 2명 유지(기술서 2.6) | 기술서의 폴더 구조·`data/split.csv`가 `feat/seq-pipeline`과 같음. DMD는 학습에 쓰는 전제이고 손 가린 하품 정답이 DMD에만 있음 | `tests` 59개, `eval.tests.test_evaluate` 55개, `test_train_lstm`·`test_share_lstm` 59개 통과. `train_lstm`의 LSTM은 평균 하나만 쓰는 구조라 `models.LSTMClassifier`와 가중치가 호환되지 않아 파일 안에 둠 | 장범수 |
+| 11.05 | `ear_ratio` 0.6 유지. DMD 합본 A 기준 교차 확인(`runs/calib_dmd_1105`, 육주영 PC): 운전자가 겹치지 않는 기존 8클립·신규 8클립에서 찾아 서로 채점 | 기술서 5.5의 재보정 여부 판단 | 찾은 값 0.70·0.61, 전체 0.70. 신규 8: 0.70 F1 0.944·3초 재현율 0.875·오경보 9.8, 0.60 0.946·0.750·4.9. 기존 8: 0.61 0.940·0.500·4.8, 0.60 0.937·0.400·4.8. F1은 0.60~0.75에서 거의 같고 올리면 오경보가 늘어 유지 | 육주영, 장범수 |
 
 ### 팀 코드와 다른 점 (PR에서 정할 것)
 

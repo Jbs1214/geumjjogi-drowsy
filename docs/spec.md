@@ -88,7 +88,7 @@ MediaPipe Face Landmarker가 프레임마다 얼굴 좌표 478개를 내고(사�
 ### 2.6 분할과 정규화
 
 - 운전자 단위 분할 파일(`data/split.csv`)을 한 번만 만들어 모든 실험이 공유합니다. 같은 사람이 학습과 평가에 섞이지 않습니다.
-- 분할 파일은 데이터와 함께 비공개 Drive로 공유합니다. 새로 만들 때는 `dataset.import_mini`로 만든 뒤 `dataset.dmd_convert --split train`으로 DMD 신규 운전자를 더합니다. NITYMED 분할은 `split_nitymed.csv`와 같습니다.
+- 분할 파일은 NITYMED 41클립과 DMD 16클립, 모두 57행이고 데이터와 함께 비공개 Drive로 공유합니다. 새로 만들 때는 `dataset.import_mini`로 만든 뒤 `dataset.dmd_convert --split train`으로 DMD 신규 운전자를 더합니다. NITYMED 분할은 `split_nitymed.csv`와 같습니다.
 
 | 분할 | NITYMED | DMD |
 |---|---|---|
@@ -96,7 +96,7 @@ MediaPipe Face Landmarker가 프레임마다 얼굴 좌표 478개를 내고(사�
 | val | 6클립, 3명 | 3클립, 2명(29, 33) |
 | test | 13클립, 8명 | 없음 |
 
-DMD를 학습에 쓰는 이유는 야간뿐인 NITYMED에 주간 조건을 더하고, 손 가린 하품 정답이 DMD에만 있기 때문입니다. 따라서 DMD 평가는 학습에 쓰지 않은 val 운전자로만 내고, 16클립 전체를 평가 세트로 쓰지 않습니다. 최종 판정은 Test2입니다.
+DMD를 학습에 쓰는 이유는 야간뿐인 NITYMED에 주간 조건을 더하고, 손 가린 하품 정답이 DMD에만 있기 때문입니다. 따라서 DMD로 학습한 가중치(`sig3`, `sig4`, `yawn1`)의 DMD 평가는 학습에 쓰지 않은 val 운전자로만 냅니다. 규칙과 NITYMED만으로 학습한 가중치(v8)는 DMD 운전자를 학습에 쓰지 않았으므로 16클립 전체를 참고 평가로 쓸 수 있습니다. 최종 판정은 Test2입니다.
 
 - 평균·표준편차 `norm.npz`는 학습 데이터로만 계산합니다.
 - 운전자 단위 교차검증 결과도 함께 보고합니다.
@@ -223,7 +223,7 @@ DMD를 고른 이유: 후보 4개(DMD, UTA-RLDD, YawDD, NTHU-DDD) 중 주간 실
 
 ### 5.5 NITYMED 라벨링 절차
 
-1. 검수 라벨로 `calibrate`를 돌려 임계값을 맞춥니다. 현재 `best_params.json`은 AI Hub 손 라벨 30클립으로 맞춘 값이고 DMD는 쓰지 않았습니다. 임계값을 고른 클립과 점수를 낸 클립이 같아 macro F1 0.911은 낙관적인 값입니다. `calibrate`가 저장소 밖 도구이고 val 규칙 성능이 기존 0.48배 기준보다 낮지 않아(README 실험 기록) 발표까지 이 값을 씁니다.
+1. 검수 라벨로 `calibrate`를 돌려 임계값을 맞춥니다. 현재 `best_params.json`은 AI Hub 손 라벨 30클립으로 맞춘 값이고 DMD는 쓰지 않았습니다. 임계값을 고른 클립과 점수를 낸 클립이 같아 macro F1 0.911은 낙관적인 값입니다. DMD 합본 A 기준으로 운전자가 겹치지 않는 두 묶음을 나눠 교차 확인한 결과(11.05, 육주영) 눈 감김 F1이 `ear_ratio` 0.60~0.75에서 0.94~0.95로 거의 같아 0.6을 유지합니다. 0.70은 3초 재현율이 오르지만 3초 오경보가 두 배 정도로 늘 수 있습니다.
 2. 마이크로슬립 2~3편에 `label`을 먼저 돌려 야간 오탐·미탐을 확인합니다.
 3. 전체에 자동 라벨(`label`)을 만듭니다.
 4. 검수: 눈 감김은 프레임 단위, 하품은 0.5초 단위로 고치고, 영상 전체를 0.5배속으로 훑어 놓친 눈 감김을 추가합니다. 깜빡임은 기본 기준에 따라 눈 감김으로 추가합니다. 단 11.04 기준 기존 NITYMED 라벨은 깜빡임을 정상으로 둔 상태이고 재라벨은 발표 이후로 미루므로, 이미 검수된 파일은 그대로 쓰고 새로 검수하는 파일부터 이 기준을 적용합니다. 고개 숙임은 `head_down`에 따로 적습니다.
@@ -343,13 +343,14 @@ DMD를 고른 이유: 후보 4개(DMD, UTA-RLDD, YawDD, NTHU-DDD) 중 주간 실
 
 - 구현 완료, 병합 대기: `feat/head-pitch`(고개 숙임 상대 pitch 17.5도), `feat/dmd-convert`(`dataset/dmd_convert.py`), `feat/yawn-model`(하품 전용 모델의 학습과 실시간 연결, 하품 끊김 1.0초 병합과 길이 상한 7초), `feat/demo-final`(영상 데모·결과 그래프의 최종 구성, 마스크 스위치), `feat/baseline`(scikit-learn 기준선), `feat/rule-params`(`best_params.json` 연결), `feat/main-merge`(`main`과 이 문서의 합본). 모두 `feat/seq-pipeline` 위에 이 순서로 쌓여 있어, `feat/main-merge` 하나를 `main`에 병합하면 전부 들어갑니다.
 - `calibrate`·`label`은 저장소 밖 이전 도구입니다.
+- DMD 합본 라벨의 사람 수정 2건(gB_10 하품 끝, gZ_37 눈 감김 122.547~122.782초 삭제)이 `data/labels`에 아직 없습니다. 합본 파일을 받아 반영한 뒤 `build_windows`와 재학습을 다시 합니다.
 - 판정 로그(6.2)의 `wall_time`·클래스 확률 기록과 선글라스 판정 불가(8장)는 코드에 없습니다. 선글라스는 기준값을 정할 영상이 없습니다.
 
 **기준 정리 (2026-11-05).** 코드와 문서가 어긋났던 항목을 아래처럼 정했습니다.
 
 - 파이프라인: 이 문서의 폴더 구조(`dataset/`, `auto_label/`, `demo/`, 최상위 `config.py`)와 `data/split.csv`를 따르는 `feat/seq-pipeline`이 기준입니다. `main`의 `train_lstm`·`share_lstm`과 창 단위 평가(`eval/window_eval.py`)는 `feat/main-merge`에서 이 구조에 맞춰 유지합니다.
 - 분할 파일: 2.6의 `data/split.csv` 하나입니다. `split.json`은 `build_windows`가 내보내는 사본이고 입력이 아닙니다.
-- DMD 분할: 2.6의 표대로 고정합니다. 16클립 전체를 평가 세트로 쓰지 않습니다.
+- DMD 분할: 2.6의 표대로 고정합니다. DMD로 학습한 가중치는 val 3클립으로만 평가합니다.
 - `best_params.json`: 5.5의 현재 값을 그대로 씁니다.
 
 ## 10. 참고 논문

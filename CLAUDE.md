@@ -33,7 +33,7 @@ Read the relevant file directly when needed. If it disagrees with this file, fol
 - Human labels (re-review, head-down marking, webcam ground truth, driver IDs) are made by humans. Claude does not mark them on their behalf.  
 - Auto labels (`auto_label`) are the output of rules, so **never use them as evaluation ground truth**.  
 - Do not change the `driver_id` of labels that already exist (NITYMED `md01` format; DMD uses the driver number from the file name). Never let two sources produce the same string.  
-- Split by **driver (`driver_id`)**, and have every experiment share the saved split file (`data/split.csv`). DMD drivers stay in the train/val split in `docs/spec.md` section 2.6; do not treat all DMD clips as a separate evaluation set. Compute normalization values from train only.  
+- Split by **driver (`driver_id`)**, and have every experiment share the saved split file (`data/split.csv`). DMD drivers stay in the train/val split in `docs/spec.md` section 2.6; weights trained on DMD are evaluated on DMD val drivers only. Compute normalization values from train only.  
 - Write the evaluation criteria in `README.md` before looking at results. Use the final judgment data (Test2) only once, and never use it to choose models or thresholds.
 
 ## Run order
