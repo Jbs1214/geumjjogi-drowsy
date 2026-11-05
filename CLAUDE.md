@@ -2,13 +2,13 @@
 
 These instructions apply to this repo only. Team-wide rules (branches, commits, working principles) follow `~/.claude/CLAUDE.md`; if the two differ, this file takes precedence.
 
-Drowsy driving detection: MediaPipe face features → rule-based judgment (MVP) → compare against 1D-CNN and LSTM on the same input.
+Drowsy driving detection: MediaPipe face features → rule-based judgment (MVP) → compare against 1D-CNN and LSTM on the same input. Final setup: rule and timer for eye closure, yawn-only binary model for yawns; the 4-class model stays for the rule comparison.
 
 ## Where to look
 
 Read the relevant file directly when needed. If it disagrees with this file, follow the source order below and fix this file.
 
-- Numbers (window, FPS, thresholds, time criteria): `config.py`, `rule_based/config.py`, `best_params.json`  
+- Numbers (window, FPS, thresholds, time criteria): `config.py`, `rule_based/config.py`, `auto_label/best_params.json`  
 - DMD label conversion rules: `docs/spec.md` (technical specification) section 5.4 and `rules` in the converted label JSON. The JSON produced by `dmd_convert` is the reference for DMD labels; `dataset/convert_labels.py` must not apply DMD rules on its own (if it differs, fix the code).  
 - Design background, judgment logic, label JSON format, evaluation plan: `docs/plan.md` (project proposal), `docs/spec.md` (technical specification)  
 - Run commands, library versions, experiment log: `README.md`
@@ -18,7 +18,7 @@ Read the relevant file directly when needed. If it disagrees with this file, fol
 - Use the MediaPipe **Tasks API** (the Solutions API is forbidden). For both files and real time, use `VIDEO` mode and pass the frame timestamp.  
 - Compute head angles from the face transformation matrix, not from landmark points.  
 - Drowsiness stage is decided by **continuous eye-closure time**. Do not measure closure time by counting windows; measure it with a **timer based on frame time (frame number / fps)**, like `ClosureTimer` in `rule_based/alarm.py`. The rule-based path and the model use the same timer and the same settings.  
-- The model only answers "are the eyes closed right now?". **Uncertain is an exclusion mark, not a class.**  
+- Models answer only the current state: the 4-class model gives normal, eye closure, yawn, or head-down, and the yawn model gives yawn or not. The timer measures duration. Yawn targets are in `docs/spec.md`. **Uncertain is an exclusion mark, not a class.**  
 - If the eyes close during a yawn, judge it as eye closure (priority: eye closure \> yawn) and keep the timer running. Do not exclude eye closure during a yawn from the timer.  
 - Do not hard-code numbers, thresholds, or time criteria; keep them in config files.  
 - Draw the demo timeline x-axis in video time, and show current values (EAR, etc.) on screen.
@@ -33,12 +33,12 @@ Read the relevant file directly when needed. If it disagrees with this file, fol
 - Human labels (re-review, head-down marking, webcam ground truth, driver IDs) are made by humans. Claude does not mark them on their behalf.  
 - Auto labels (`auto_label`) are the output of rules, so **never use them as evaluation ground truth**.  
 - Do not change the `driver_id` of labels that already exist (NITYMED `md01` format; DMD uses the driver number from the file name). Never let two sources produce the same string.  
-- Split by **driver (`driver_id`)**, and have every experiment share the saved split file (`data/split.csv`). Compute normalization values from train only.  
+- Split by **driver (`driver_id`)**, and have every experiment share the saved split file (`data/split.csv`). DMD drivers stay in the train/val split in `docs/spec.md` section 2.6; do not treat all DMD clips as a separate evaluation set. Compute normalization values from train only.  
 - Write the evaluation criteria in `README.md` before looking at results. Use the final judgment data (Test2) only once, and never use it to choose models or thresholds.
 
 ## Run order
 
-`auto_label.extract` → `auto_label.head_review.server` (human review) → `dataset.convert_labels` → `sequence_model.build_windows` → `sequence_model.train` → `eval.evaluate` → `eval.report` → `demo/`
+`auto_label.extract` → `auto_label.head_review.server` (human review) → `dataset.convert_labels`, `dataset.dmd_convert` → `sequence_model.build_windows` → `sequence_model.train`, `sequence_model.train_yawn` → `eval.evaluate`, `eval.yawn_compare` → `eval.report` → `demo/`
 
 - Run commands from the repo root as `python -m <folder>.<file>`. Tests: `python -m unittest discover -t . -s tests`  
 - Priority: ① rule-based MVP → ② 1D-CNN/LSTM comparison → ③ (optional) ONNX. Do not build sequence models before the MVP.

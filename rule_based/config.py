@@ -8,6 +8,8 @@ EAR_BASE_PERCENTILE = 75  # 평소 EAR 분위. 눈 감음 임계값 = best_param
 EAR_CLOSED = 0.2        # ear가 이보다 작으면 눈 감음(MVP 고정 기준). 검증: 감음 0.04, 뜬 상태 최저 0.25 (고개 들 때)
 WARN_SEC = 1.5          # 눈 감음이 이 시간(초) 이상 이어지면 주의. 기획서 3-4의 시작값
 ALERT_SEC = 3.0         # 눈 감음이 이 시간(초) 이상 이어지면 졸음 경고. 기획서 3-4
+CAUTION_SEC, DROWSY_SEC = WARN_SEC, ALERT_SEC   # eval/window_eval.py가 쓰는 이름
+PROB_ON, PROB_OFF = 0.6, 0.4    # 모델 눈 감김 켜짐·꺼짐 기준. 기술서 0장
 CARRY_MIN_SEC = 0.5     # 판정 불가(눈이 안 보임)가 되기 전에 이만큼 감고 있었으면 타이머를 이어받는다. 수정 기획서 F 5-1
 UNKNOWN_ALERT_SEC = 3.0 # 판정 불가가 이 시간(초) 이어지면 확인 필요 경고. 수정 기획서 F 5-3
 YAWN_REPEAT = 3         # 하품이 YAWN_REPEAT_WINDOW_SEC 안에 이 횟수면 하품 주의. 수정 기획서 F 4·5-3

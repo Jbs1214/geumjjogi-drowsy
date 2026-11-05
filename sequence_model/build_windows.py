@@ -13,6 +13,8 @@ import pandas as pd
 
 import config
 
+CLASS_NAMES, FEATURE_COLUMNS, EYE_CLOSED, HEAD_DOWN, WINDOW_FRAMES, STRIDE_SEC = ("정상", "눈 감김", "하품", "고개 숙임"), config.FEATURES, config.CLOSED, config.HEAD, config.WINDOW_FRAMES, config.STRIDE_SEC     # train_lstm·share_lstm·window_eval이 쓰는 이름
+
 FEATURE_SOURCE = {"nitymed": config.FEATURE_DIR, "aihub089": config.AIHUB_FEATURES, "dmd": config.FEATURE_DIR}
 
 
