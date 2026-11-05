@@ -75,7 +75,7 @@ def model_probs(df: pd.DataFrame, predictor: Predictor) -> tuple[np.ndarray, np.
 def rule_timer_inputs(df: pd.DataFrame) -> dict:
     """규칙의 타이머 입력 (최종 기획서 5-1·5-3): 판정 불가 = 그 프레임에서 얼굴이 안 보임, 고개 숙임 = pitch 규칙.
     둘 다 직전 눈 감김이 0.5초 이상이면 이어서 센다. 하품 중 눈 감김도 센다."""
-    return {"unknown": ~df["face_found"].to_numpy(dtype=bool) | is_down(df["pitch"].to_numpy())}
+    return {"unknown": ~df["face_found"].to_numpy(dtype=bool) | is_down(df["t"].to_numpy(), df["pitch"].to_numpy(), df["ear"].to_numpy())}
 
 
 def model_timer_unknown(classes: np.ndarray) -> np.ndarray:
@@ -264,7 +264,7 @@ def score_clips(clips: list[dict], tag: str, window_split: str | None = None, po
     rules = {EYE_RULES[0]: lambda c: {"눈감김": is_closed(c["df"]["ear"].to_numpy())},
              EYE_RULES[1]: lambda c: {"눈감김": ear48_closed(c["df"], c["fps"])},
              YAWN_RULE: lambda c: {"하품": yawning(c["df"]["t"].to_numpy(), c["df"]["mar"].to_numpy())},
-             HEAD_RULE: lambda c: {"고개숙임": is_down(c["df"]["pitch"].to_numpy())}}
+             HEAD_RULE: lambda c: {"고개숙임": is_down(c["df"]["t"].to_numpy(), c["df"]["pitch"].to_numpy(), c["df"]["ear"].to_numpy())}}
     for name, make in rules.items():
         scores = {c["clip"]: clip_score(c, c["df"]["t"].to_numpy(), make(c), 1 / c["fps"], **rule_timer_inputs(c["df"])) for c in clips}
         rows.append({**method_row(name, 0, scores, clips), "_scores": scores})

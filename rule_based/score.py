@@ -24,7 +24,7 @@ def indicators(t: np.ndarray, ear: np.ndarray, mar: np.ndarray, pitch: np.ndarra
         "perclos": np.clip(perclos(t, ear) / config.PERCLOS_FULL, 0, 1),
         "closure": np.clip(longest_closure(t, ear) / config.CLOSURE_FULL_SEC, 0, 1),
         "yawn": np.clip(yawn_count(t, mar) / config.YAWN_FULL, 0, 1),
-        "head_down": head_down_ratio(t, pitch),
+        "head_down": head_down_ratio(t, pitch, ear),
     })
 
 

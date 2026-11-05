@@ -27,7 +27,7 @@ from sequence_model.build_windows import feature_matrix
 from sequence_model.postprocess import NONE, Hysteresis, Post, display_classes, for_weights, yawn_classes
 from rule_based.alarm import DROWSY, NORMAL, ClosureTimer
 from rule_based.alerts import Event, MouthClosedWatch, UnknownWatch, YawnRepeat, YawnTracker, summary_markdown
-from rule_based.config import PITCH_DOWN
+from rule_based.head import HeadDown
 from demo.cfr import TimedWriter
 from demo.demo_video import STAGE_RGB, blend, font, panel
 from eval.evaluate import BASELINE_EAR_QUANTILE, EAR_RATIO
@@ -130,6 +130,7 @@ class LiveRule:
         self._t0: float | None = None
         self._baseline, self._baseline_t = np.nan, -np.inf
         self._timer = ClosureTimer()
+        self._head = HeadDown()
         self.ready, self.stage = False, NORMAL
         self.history: list[tuple[float, int]] = []
 
@@ -143,7 +144,7 @@ class LiveRule:
             self._baseline, self._baseline_t = float(np.quantile(self._ears, BASELINE_EAR_QUANTILE)), t
         self.ready = t - self._t0 >= RULE_MIN_SEC
         closed = self.ready and found and not np.isnan(ear) and ear < EAR_RATIO * self._baseline
-        head_down = bool(found and not np.isnan(pitch) and pitch > PITCH_DOWN)
+        head_down = self._head.update(t, pitch, ear)
         self.stage = self._timer.update(t, closed, unknown=(not found) or head_down)
         self.history.append((t, self.stage))
 

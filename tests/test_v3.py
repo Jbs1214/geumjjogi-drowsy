@@ -351,6 +351,33 @@ class Test2Test(unittest.TestCase):
                 self.assertEqual([p.stem for p in video_set("test2")[0]], ["new_a"])
 
 
+class HeadDownTest(unittest.TestCase):
+    def test_front_pitch_and_fallback(self):
+        from rule_based.head import HeadDown
+        head = HeadDown()
+        self.assertFalse(head.update(0.0, 24.9, 0.1))       # 정면 pitch가 없으면 절대 25도
+        self.assertTrue(head.update(0.1, 25.0, 0.1))        # 눈 감은 프레임은 정면 pitch에 안 들어간다
+        self.assertFalse(head.update(0.2, 5.0, 0.3))
+        self.assertTrue(head.update(0.3, 22.5, 0.1))        # 정면 5도 + 17.5도 이상
+        self.assertFalse(head.update(0.4, 22.4, 0.1))
+        self.assertFalse(head.update(0.5, float("nan"), 0.3))
+
+    def test_front_pitch_stops_after_60_seconds(self):
+        from rule_based.head import HeadDown
+        head = HeadDown()
+        for i in range(61):
+            head.update(float(i), 5.0, 0.3)
+        for i in range(61, 200):
+            head.update(float(i), 40.0, 0.3)
+        self.assertEqual(head.limit, 22.5)
+
+    def test_camera_offset_changes_the_limit(self):
+        from rule_based.head import is_down
+        t, ear = np.arange(4) / 10, np.full(4, 0.3)
+        self.assertEqual(is_down(t, np.array([9.0, 9.0, 26.0, 27.0]), ear).tolist(), [False, False, False, True])
+        self.assertEqual(is_down(t, np.array([-3.0, -3.0, 15.0, 14.0]), ear).tolist(), [False, False, True, False])
+
+
 class DmdTest(unittest.TestCase):
     def test_dmd_masks(self):
         from dataset.convert_labels import dmd_driver, dmd_masks
