@@ -343,12 +343,12 @@ DMD를 고른 이유: 후보 4개(DMD, UTA-RLDD, YawDD, NTHU-DDD) 중 주간 실
 
 - 구현 완료, 병합 대기: `feat/head-pitch`(고개 숙임 상대 pitch 17.5도), `feat/dmd-convert`(`dataset/dmd_convert.py`), `feat/yawn-model`(하품 전용 모델의 학습과 실시간 연결, 하품 끊김 1.0초 병합과 길이 상한 7초), `feat/demo-final`(영상 데모·결과 그래프의 최종 구성, 마스크 스위치), `feat/baseline`(scikit-learn 기준선), `feat/rule-params`(`best_params.json` 연결), `feat/main-merge`(`main`과 이 문서의 합본). 모두 `feat/seq-pipeline` 위에 이 순서로 쌓여 있어, `feat/main-merge` 하나를 `main`에 병합하면 전부 들어갑니다.
 - `calibrate`·`label`은 저장소 밖 이전 도구입니다.
-- DMD 합본 라벨의 사람 수정 2건(gB_10 하품 끝, gZ_37 눈 감김 122.547~122.782초 삭제)이 `data/labels`에 아직 없습니다. 합본 파일을 받아 반영한 뒤 `build_windows`와 재학습을 다시 합니다.
 - 판정 로그(6.2)의 `wall_time`·클래스 확률 기록과 선글라스 판정 불가(8장)는 코드에 없습니다. 선글라스는 기준값을 정할 영상이 없습니다.
 
 **기준 정리 (2026-11-05).** 코드와 문서가 어긋났던 항목을 아래처럼 정했습니다.
 
 - 파이프라인: 이 문서의 폴더 구조(`dataset/`, `auto_label/`, `demo/`, 최상위 `config.py`)와 `data/split.csv`를 따르는 `feat/seq-pipeline`이 기준입니다. `main`의 `train_lstm`·`share_lstm`과 창 단위 평가(`eval/window_eval.py`)는 `feat/main-merge`에서 이 구조에 맞춰 유지합니다.
+- DMD 라벨: Drive `DMD/합본 라벨`(labels_A + 사람 수정 2건)이 기준입니다. 수정은 gB_10(10;35) 하품 시작 127.0→127.037초, gZ_37 눈 감김 122.547~122.782초 삭제이고, 사람이 확인한 경계라 0.5초 단위가 아닐 수 있습니다.
 - 분할 파일: 2.6의 `data/split.csv` 하나입니다. `split.json`은 `build_windows`가 내보내는 사본이고 입력이 아닙니다.
 - DMD 분할: 2.6의 표대로 고정합니다. DMD로 학습한 가중치는 val 3클립으로만 평가합니다.
 - `best_params.json`: 5.5의 현재 값을 그대로 씁니다.

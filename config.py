@@ -48,7 +48,7 @@ SPLIT = DATA / "split.csv"              # 운전자 단위 분할. 모든 실험
 NORM = DATA / "norm.json"               # train 창 특징의 평균·표준편차
 WINDOW_DIR = DATA / "windows"           # build_windows.py 결과
 RUNS = ROOT / "runs"
-YAWN_WEIGHTS = RUNS / "yawn1" / "cnn1d_v01.pt"   # 최종 구성의 하품 전용 모델 (기술서 4.1)
+YAWN_WEIGHTS = RUNS / "yawn2" / "cnn1d_v01.pt"   # 최종 구성의 하품 전용 모델 (기술서 4.1)
 
 # 얼굴 검출 (landmarks/extract.py). main·김민영 특징 CSV(v8 학습 창)와 같은 값이다. 다르면 얼굴을 잡는 프레임이 학습 때와 달라진다
 MIN_FACE_CONFIDENCE = 0.3
