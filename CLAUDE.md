@@ -8,7 +8,7 @@ Drowsy driving detection: MediaPipe face features → rule-based judgment (MVP) 
 
 Read the relevant file directly when needed. If it disagrees with this file, follow the source order below and fix this file.
 
-- Numbers (window, FPS, thresholds, time criteria): `config.py`, `rule_based/config.py`, `best_params.json`  
+- Numbers (window, FPS, thresholds, time criteria): `config.py`, `rule_based/config.py`, `auto_label/best_params.json`  
 - DMD label conversion rules: `docs/spec.md` (technical specification) section 5.4 and `rules` in the converted label JSON. The JSON produced by `dmd_convert` is the reference for DMD labels; `dataset/convert_labels.py` must not apply DMD rules on its own (if it differs, fix the code).  
 - Design background, judgment logic, label JSON format, evaluation plan: `docs/plan.md` (project proposal), `docs/spec.md` (technical specification)  
 - Run commands, library versions, experiment log: `README.md`
@@ -33,7 +33,7 @@ Read the relevant file directly when needed. If it disagrees with this file, fol
 - Human labels (re-review, head-down marking, webcam ground truth, driver IDs) are made by humans. Claude does not mark them on their behalf.  
 - Auto labels (`auto_label`) are the output of rules, so **never use them as evaluation ground truth**.  
 - Do not change the `driver_id` of labels that already exist (NITYMED `md01` format; DMD uses the driver number from the file name). Never let two sources produce the same string.  
-- Split by **driver (`driver_id`)**, and have every experiment share the saved split file (`data/split.csv`). Compute normalization values from train only.  
+- Split by **driver (`driver_id`)**, and have every experiment share the saved split file (`data/split.csv`). DMD drivers stay in the train/val split in `docs/spec.md` section 2.6; do not treat all DMD clips as a separate evaluation set. Compute normalization values from train only.  
 - Write the evaluation criteria in `README.md` before looking at results. Use the final judgment data (Test2) only once, and never use it to choose models or thresholds.
 
 ## Run order
