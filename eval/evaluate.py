@@ -1,402 +1,478 @@
-# 창별 모델 확률 → 켜짐·꺼짐 → 연속 눈 감김 타이머 → 눈 감김 지표 (기술서 3.1, 7절).
-# 입력은 창별 확률 (N,4) .npy, 또는 clip·start_sec·y가 함께 든 .npz다. 정답과 시각은 windows.npz에서 읽는다.
+# 사람 라벨(NITYMED)로 모델과 규칙을 채점한다. 기준은 README "판정 기준"에 있다.
+#   val:  Val로 1D-CNN과 LSTM 중 하나를 고른다. 결과 runs/<tag>/eval_val
+#   test: 고른 모델을 Test로 한 번 채점하고 눈 규칙 두 가지 중 나은 쪽과 비교한다. 결과가 있으면 다시 돌지 않는다
+# 모델은 15 FPS 프레임마다 그 프레임에서 끝나는 3초 창을 판정한다. 눈감김 시간은 규칙과 같은 ClosureTimer로 잰다.
 #
-# 실행: python -m eval.evaluate --windows <windows.npz> --probs <확률.npy> [--split val]
-#       python -m eval.evaluate --windows <windows.npz> --probs val_probs.npz --probs-key probs_v01
-#       python -m eval.evaluate --windows <windows.npz> --probs val_probs.npz --probs-key all --out-dir runs/eval_v8_check
-#       python -m eval.evaluate ... --split test --final
+# 실행: python -m eval.evaluate val --tag v1
+#       python -m eval.evaluate test --tag v1
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from eval.metrics import (_first_alert, alert_delay, classification_metrics, event_recall, false_alarms_per_hour,
-                          match_segments, prf, segments_from_labels)
-from rule_based import config
-from rule_based.alarm import CAUTION, DROWSY, alert_times
+import config
+from sequence_model.build_windows import channel_masks, feature_matrix, frame_states, resample_index
+from eval.metrics import (ALERT_TOLERANCE_SEC, alert_delay, classification_metrics, event_recall, false_alarms_per_hour, match_segments, prf,
+                          segments_within)
+from sequence_model.models import Predictor
+from sequence_model.postprocess import CANDIDATES, NONE, Post, bridge, decide, drop_short, shown_yawn
+from rule_based.alarm import DROWSY, WARN, stage_starts, timer_stages
 from rule_based.common import runs
-from sequence_model.build_windows import CLASS_NAMES, EYE_CLOSED, STRIDE_SEC
+from rule_based.config import EAR_BASE_PERCENTILE
+from rule_based.eyes import best_ear_ratio, is_closed
+from rule_based.head import is_down
+from rule_based.yawn import yawning
 
-LABEL_TOLERANCE_SEC = 0.5   # 구간 라벨 오차
-ALERT_TOLERANCE_SEC = 0.5   # 창 간격 0.5초가 해상도 한계라서 0.5초로 둔다. Euro NCAP 허용 오차 0.2초는 참고로만 본다
-MIN_CLOSE_SEC = 0.1         # 기술서 3.1. 감김 길이가 창 수 × 0.5초라 가장 짧아도 0.5초이므로 0.5초 간격에서는 효과가 없다
-
-CLIP_GAP_SEC = 10.0         # 전체 타임라인에서 클립 사이 간격. 허용 오차보다 커서 다른 클립의 경고와 맞붙지 않는다
-SUM_TOLERANCE = 1e-3        # 확률 행 합이 1에서 벗어나도 되는 범위. float32로 저장한 확률의 반올림 오차를 허용한다
-ALL_KEYS = "all"            # --probs-key 값. probs_로 시작하는 키를 모두 평가한다
-EVENT_COLUMNS = ["probs_key", "clip", "kind", "level", "start_sec", "end_sec", "length_sec", "alert_sec", "delay_sec", "result"]
-LIMITS = ("0.5초 간격이라 경고 시각이 실제 감김 시작과 최대 0.5초 어긋나고, 지연 수치에 그게 포함된다.",)
-
-
-def markdown_table(headers: list[str], rows: list[list]) -> str:
-    """머리글과 행 → 마크다운 표. 소수는 셋째 자리까지, None과 NaN은 '-'."""
-    def cell(value) -> str:
-        if value is None or (isinstance(value, float) and np.isnan(value)):
-            return "-"
-        return f"{value:.3f}" if isinstance(value, float) else str(value)
-
-    lines = ["| " + " | ".join(headers) + " |", "| " + " | ".join("---" for _ in headers) + " |"]
-    return "\n".join(lines + ["| " + " | ".join(cell(v) for v in row) + " |" for row in rows])
+EAR_RATIO = best_ear_ratio()
+BASELINE_EAR_QUANTILE = EAR_BASE_PERCENTILE / 100
+MIN_CLOSE_SEC, MAX_GAP_SEC = 0.1, 0.2     # 평소 EAR 비율 규칙의 짧은 끊김 잇기와 짧은 구간 지우기 (이전 폴더 interim_label과 같다)
+EYE_RULES = ("MVP 규칙 (EAR 0.2)", f"규칙 EAR {EAR_RATIO:g}")
+YAWN_RULE, HEAD_RULE = "하품 규칙 (MAR)", "고개숙임 규칙 (pitch)"
+TARGETS = {"눈감김": config.CLOSED, "하품": config.YAWN, "고개숙임": config.HEAD}
+SIMPLER = "cnn1d"
+BOOTSTRAPS, SEED = 2000, 42
 
 
-def load_rows(windows_path: Path, split: str) -> dict:
-    """windows.npz에서 해당 분할 행의 clip, start_sec, y만 읽는다. 다른 분할 행은 남기지 않는다."""
-    with np.load(windows_path, allow_pickle=False) as data:
-        keep = data["split"] == split
-        rows = {"clip": data["clip"][keep], "start_sec": data["start_sec"][keep], "y": data["y"][keep]}
-    if not len(rows["y"]):
-        raise SystemExit(f"{windows_path}에 split={split} 행이 없습니다")
-    return rows
+def ear48_closed(df: pd.DataFrame, fps: float) -> np.ndarray:
+    """EAR이 클립의 평소 값(best_params의 ear_ratio × EAR_BASE_PERCENTILE 분위) 미만인 프레임. 0.2초 미만 끊김은 잇고 0.1초 미만 구간은 지운다."""
+    found = df["face_found"].to_numpy(dtype=bool)
+    if not found.any():
+        return np.zeros(len(df), dtype=bool)
+    mask = (df["ear"].to_numpy() < EAR_RATIO * df.loc[found, "ear"].quantile(BASELINE_EAR_QUANTILE)) & found
+    for start, end in zip(*runs(~mask)):
+        if start > 0 and end < len(mask) - 1 and (end - start + 1) / fps < MAX_GAP_SEC:
+            mask[start:end + 1] = True
+    for start, end in zip(*runs(mask)):
+        if (end - start + 1) / fps < MIN_CLOSE_SEC:
+            mask[start:end + 1] = False
+    return mask
 
 
-def _time_order(clip: np.ndarray, start_sec: np.ndarray, source: str) -> np.ndarray:
-    """클립·시작 시각 순서. 같은 클립에 같은 시각이 두 번 있으면 멈춘다."""
-    order = np.lexsort((start_sec, clip))
-    same = (clip[order][1:] == clip[order][:-1]) & np.isclose(start_sec[order][1:], start_sec[order][:-1])
-    if same.any():
-        i = order[np.flatnonzero(same)[0]]
-        raise SystemExit(f"{source}: 같은 창이 두 번 있습니다 ({clip[i]}, {start_sec[i]}초)")
-    return order
+def model_probs(df: pd.DataFrame, predictor: Predictor) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """특징 표 → (15 FPS 판정 시각, 프레임별 출력별 확률 (N, 출력 수), 판정 여부).
+    판정은 0.2초(격자 JUDGE_EVERY칸)마다 하고 사이 프레임은 직전 판정을 유지한다(수정 기획서 F 5-3).
+    첫 창이 차기 전, 창의 미검출이 30%를 넘을 때, 창 끝 프레임에서 얼굴이 안 보일 때는 판정 불가다(5-1)."""
+    grid, index = resample_index(df["t"].to_numpy())
+    X = feature_matrix(df, getattr(predictor, "relative", False))[index]
+    probs = np.zeros((len(grid), getattr(predictor, "outputs", config.N_CLASSES)))
+    judged = np.zeros(len(grid), dtype=bool)
+    first = config.WINDOW_FRAMES - 1
+    if len(X) < config.WINDOW_FRAMES:
+        return grid, probs, judged
+    windows = np.lib.stride_tricks.sliding_window_view(X, config.WINDOW_FRAMES, axis=0).transpose(0, 2, 1)
+    at = np.arange(0, len(windows), config.JUDGE_EVERY)          # 판정하는 창 (창 끝 = first + at)
+    face = config.FEATURES.index(config.FACE_COLUMN)
+    p = predictor.predict(np.ascontiguousarray(windows[at]))
+    ok = (1 - windows[at, :, face].mean(axis=1) <= config.MAX_MISSING) & (windows[at, -1, face] > 0.5)
+    hold = np.minimum((np.arange(len(windows)) // config.JUDGE_EVERY), len(at) - 1)  # 사이 프레임은 직전 판정
+    probs[first:] = p[hold]
+    judged[first:] = ok[hold]
+    return grid, probs, judged
 
 
-def _check_probs(probs: np.ndarray, n_rows: int, source: str) -> np.ndarray:
-    if probs.ndim != 2 or probs.shape[1] != len(CLASS_NAMES):
-        raise SystemExit(f"{source}: 확률 모양은 (N, {len(CLASS_NAMES)})여야 합니다: {probs.shape}")
-    if len(probs) != n_rows:
-        raise SystemExit(f"{source}: 확률 {len(probs)}행, windows.npz {n_rows}행으로 행 수가 다릅니다")
-    if not np.isfinite(probs).all() or probs.min() < 0 or probs.max() > 1:
-        raise SystemExit(f"{source}: 확률은 0~1 사이의 유한값이어야 합니다. 로짓을 저장한 것은 아닌지 확인하세요")
-    if not np.isclose(probs.sum(axis=1), 1.0, atol=SUM_TOLERANCE).all():
-        raise SystemExit(f"{source}: 확률의 행 합이 1이 아닙니다")
-    return probs
+def head_down(df: pd.DataFrame) -> np.ndarray:
+    return is_down(*(df[name].to_numpy() for name in ("t", "pitch", "ear_l", "ear_r")))
 
 
-def load_probs(path: Path, key: str | None, rows: dict) -> np.ndarray:
-    """확률 파일 → rows와 같은 행 순서의 (N,4). .npy는 키가 없어 windows.npz 행 순서라고 가정한다."""
-    if path.suffix == ".npy":
-        return _check_probs(np.load(path, allow_pickle=False), len(rows["y"]), str(path))
-
-    with np.load(path, allow_pickle=False) as data:
-        names = [name for name in data.files if name.startswith("probs_")]
-        if key not in data.files:
-            raise SystemExit(f"{path}: --probs-key로 다음 중 하나를 고르세요: {names} (받은 값: {key})")
-        missing = {"clip", "start_sec", "y", "classes"} - set(data.files)
-        if missing:
-            raise SystemExit(f"{path}: 키가 없습니다: {sorted(missing)}")
-        clip, start_sec, y, classes, probs = (data[name] for name in ("clip", "start_sec", "y", "classes", key))
-    # 팀원 파일은 "눈감김"처럼 띄어쓰기 없이 적을 수 있다. 띄어쓰기만 무시하고 순서는 그대로 검사한다
-    if [str(c).replace(" ", "") for c in classes] != [name.replace(" ", "") for name in CLASS_NAMES]:
-        raise SystemExit(f"{path}: 클래스 순서가 {list(CLASS_NAMES)}가 아닙니다: {[str(c) for c in classes]}")
-    probs = _check_probs(probs, len(rows["y"]), f"{path}[{key}]")
-    if not len(clip) == len(start_sec) == len(y) == len(probs):
-        raise SystemExit(f"{path}: clip, start_sec, y, {key}의 행 수가 서로 다릅니다")
-
-    # 파일 행 순서가 달라도 같은 창이면 맞춰 쓴다. 창이나 정답이 다르면 다른 데이터로 만든 확률이다
-    file_order = _time_order(clip, start_sec, str(path))
-    row_order = _time_order(rows["clip"], rows["start_sec"], "windows.npz")
-    for name, same in (("clip", clip[file_order] == rows["clip"][row_order]),
-                       ("start_sec", np.isclose(start_sec[file_order], rows["start_sec"][row_order])),
-                       ("y", y[file_order] == rows["y"][row_order])):
-        if not same.all():
-            i = row_order[np.flatnonzero(~same)[0]]
-            raise SystemExit(f"{path}: {name}이 windows.npz와 어긋납니다 (windows.npz 기준 {rows['clip'][i]}, {rows['start_sec'][i]}초)")
-    aligned = np.empty_like(probs)
-    aligned[row_order] = probs[file_order]
-    return aligned
+def rule_timer_inputs(df: pd.DataFrame) -> dict:
+    """규칙의 타이머 입력 (최종 기획서 5-1·5-3): 판정 불가 = 그 프레임에서 얼굴이 안 보임, 고개 숙임 = pitch 규칙.
+    둘 다 직전 눈 감김이 0.5초 이상이면 이어서 센다. 하품 중 눈 감김도 센다."""
+    return {"unknown": ~df["face_found"].to_numpy(dtype=bool) | head_down(df)}
 
 
-def closed_from_prob(prob: np.ndarray) -> np.ndarray:
-    """눈 감김 확률 → 켜짐·꺼짐 적용 후 closed. 켜짐은 PROB_ON 이상, 꺼짐은 PROB_OFF 미만, 사이는 이전 상태를 유지한다.
-
-    ProbToClosed는 PROB_OFF 이하에서 꺼져 기술서(0.4 미만)와 경계가 달라 쓰지 않는다.
-    """
-    closed = np.zeros(len(prob), dtype=bool)
-    state = False
-    for i, p in enumerate(prob):
-        if p >= config.PROB_ON:
-            state = True
-        elif p < config.PROB_OFF:
-            state = False
-        closed[i] = state
-    return closed
+def model_timer_unknown(classes: np.ndarray) -> np.ndarray:
+    """모델의 타이머 이어받기 대상: 판정 불가(-1)와 고개숙임 클래스 (최종 기획서 5-1·5-3)."""
+    return (classes < 0) | (classes == config.HEAD)
 
 
-def drop_short_closures(closed: np.ndarray) -> np.ndarray:
-    """MIN_CLOSE_SEC보다 짧은 감김을 지운다. 끝−시작으로 재면 창 1개가 0초가 되므로 창 수 × 간격으로 잰다."""
-    out = closed.copy()
-    for first, last in zip(*runs(closed)):
-        if (last - first + 1) * STRIDE_SEC < MIN_CLOSE_SEC:
-            out[first:last + 1] = False
+def grid_mouth_closed(df: pd.DataFrame) -> np.ndarray:
+    """원본 프레임의 입 다문 채 이어진 시간 → 15 FPS 격자 (화면 하품 표시용)."""
+    from rule_based.alerts import mouth_closed_seconds
+
+    _, index = resample_index(df["t"].to_numpy())
+    return mouth_closed_seconds(df["t"].to_numpy(), df["mar"].to_numpy())[index]
+
+
+def grid_yawning(df: pd.DataFrame) -> np.ndarray:
+    """원본 프레임의 하품 중(MAR 규칙) → 15 FPS 격자. 격자마다 모델 입력과 같은 원본 프레임을 쓴다."""
+    _, index = resample_index(df["t"].to_numpy())
+    return yawning(df["t"].to_numpy(), df["mar"].to_numpy())[index]
+
+
+def model_frames(df: pd.DataFrame, predictor: Predictor, post: Post = NONE) -> tuple[np.ndarray, np.ndarray]:
+    """특징 표 → (15 FPS 판정 시각, 프레임별 클래스). 판정하지 않는 프레임은 -1이다. post는 후처리(기본은 argmax 그대로)."""
+    grid, probs, judged = model_probs(df, predictor)
+    return grid, decide(probs, judged, post)
+
+
+def intervals(times: np.ndarray, flags: np.ndarray, step: float) -> list[tuple[float, float]]:
+    return [(float(times[s]), float(times[e] + step)) for s, e in zip(*runs(flags))]
+
+
+def wipe(times: np.ndarray, flags: np.ndarray, uncertain: list) -> np.ndarray:
+    """불확실 구간의 판정을 지운다. 모든 방법에 똑같이 적용한다."""
+    out = flags.copy()
+    for start, end in uncertain:
+        out[(times >= start) & (times < end)] = False
     return out
 
 
-def timer_alerts(t: np.ndarray, closed: np.ndarray) -> list[tuple[float, str]]:
-    """연속 구간 하나 → 단계가 오른 (시각, 단계) 목록.
-
-    타이머는 마지막 시각 − 첫 시각으로 재므로 창 시각만 넣으면 창 6개(3.0초)가 2.5초가 된다.
-    정답 길이(창 수 × 간격)와 맞추려고 창 하나를 간격만큼의 칸으로 보고 칸 시작과 끝 시각을 모두 넣는다.
-    """
-    return alert_times(np.column_stack((t, t + STRIDE_SEC)).ravel(), np.repeat(closed, 2))
-
-
-def continuous_parts(start_sec: np.ndarray) -> list[np.ndarray]:
-    """시간순 시작 시각 → 연속 구간별 행 번호. 간격이 STRIDE_SEC가 아니면 제외된 창이 있으므로 끊는다."""
-    breaks = np.flatnonzero(~np.isclose(np.diff(start_sec), STRIDE_SEC)) + 1
-    return np.split(np.arange(len(start_sec)), breaks)
-
-
-def _is_false_alarm(alert: float, long_events: list[tuple[float, float]]) -> bool:
-    return not any(e[0] <= alert <= e[1] + ALERT_TOLERANCE_SEC for e in long_events)
+def load_clip(clip: str) -> dict:
+    """클립 → 특징, 정답 구간(클래스별), 불확실 구간, 3초·1.5초 이상 눈 감김, 평가 시간."""
+    label = json.loads((config.LABEL_DIR / f"{clip}.json").read_text(encoding="utf-8"))
+    df = pd.read_parquet(config.FEATURE_DIR / f"{clip}.parquet").iloc[:label["frames"]]
+    fps = float(label["fps"])
+    t = np.arange(len(df)) / fps
+    states = frame_states(channel_masks(label, len(df), fps))
+    truth = {name: intervals(t, states == value, 1 / fps) for name, value in TARGETS.items()}
+    # 경고 채점의 정답: 하품 중 눈 감김도 넣는다 (최종 기획서는 하품 중 타이머 제외를 두지 않는다)
+    closures = merge(truth["눈감김"])
+    uncertain = [tuple(s) for s in label["uncertain"]]
+    duration = len(df) / fps
+    return {"clip": clip, "df": df, "fps": fps, "truth": truth, "uncertain": uncertain, "span": (config.WINDOW_SEC, duration),
+            "events": {sec: [c for c in closures if round(c[1] - c[0], 3) >= sec] for sec in (3.0, 1.5)},
+            "hours": (duration - sum(e - s for s, e in uncertain)) / 3600}
 
 
-def level_metrics(events: list[tuple[float, float]], alerts: np.ndarray, threshold: float) -> dict:
-    """정답 이벤트와 한 단계의 경고 시각 → 재현율, 지연, 오경보 수. 시각은 모두 전체 타임라인 기준이다."""
-    long_events = [e for e in events if e[1] - e[0] >= threshold]
-    delays = [hit - (e[0] + threshold) for e in long_events
-              if (hit := _first_alert(e, alerts, ALERT_TOLERANCE_SEC)) is not None]
-    return {
-        "threshold_sec": threshold,
-        "n_events": len(long_events),
-        "recall": event_recall(long_events, alerts, ALERT_TOLERANCE_SEC),
-        "delay_mean": alert_delay(events, alerts, threshold, ALERT_TOLERANCE_SEC),
-        "delay_median": float(np.median(delays)) if delays else float("nan"),
-        "delay_max": float(np.max(delays)) if delays else float("nan"),
-        "n_alerts": len(alerts),
-        "false_alarms": int(sum(_is_false_alarm(a, long_events) for a in alerts)),
-    }
+def merge(spans: list[tuple[float, float]], gap: float = 0.2) -> list[tuple[float, float]]:
+    """사람이 나눠 표시한 이어지는 눈감김 구간을 합친다 (이전 폴더 merged_closures와 같다)."""
+    out: list[list[float]] = []
+    for start, end in sorted(spans):
+        if out and start - out[-1][1] <= gap:
+            out[-1][1] = max(out[-1][1], end)
+        else:
+            out.append([start, end])
+    return [(a, b) for a, b in out]
 
 
-def event_rows(true_spans: list[tuple[float, float]], alerts: dict, clips: list[tuple[str, float, float]]) -> list[dict]:
-    """정답 이벤트와 오경보 → events.csv 행. 전체 타임라인 시각을 클립 안 시각으로 되돌린다. clips: (클립, 시각 차, 타임라인 끝)."""
-    def locate(time: float) -> tuple[str, float]:
-        return next((name, base) for name, base, end in clips if time <= end)
+def clip_score(clip: dict, times: np.ndarray, flags: dict[str, np.ndarray], step: float, grace: float = 0.0,
+               min_close: float = 0.0, unknown: np.ndarray | None = None, yawn: np.ndarray | None = None,
+               carry_max: float | None = None) -> dict:
+    """클래스별 판정 → 클래스별 구간 개수와 눈감김 경고 시각. grace는 눈감김의 끊김 허용(구간은 그만큼 잇고, 타이머도 이어 간다).
+    min_close보다 짧은 눈감김 구간은 구간 채점에서 지운다(타이머는 그대로).
+    타이머: unknown(판정 불가·고개 숙임)은 0.5초 이상 감은 뒤면 이어받고(최대 carry_max초), yawn을 주면 그 프레임의 감음은 넣지 않는다."""
+    out = {}
+    for name, value in flags.items():
+        mask = wipe(times, value, clip["uncertain"])
+        if name == "눈감김":
+            mask = drop_short(bridge(times, mask, grace), step, min_close)
+        out[name] = np.array(match_segments(segments_within(clip["truth"][name], *clip["span"]), segments_within(intervals(times, mask, step), *clip["span"])))
+    if "눈감김" in flags:
+        closed = flags["눈감김"] if yawn is None else flags["눈감김"] & ~yawn
+        stages = timer_stages(times, wipe(times, closed, clip["uncertain"]), grace_sec=grace, unknown=unknown, carry_max_sec=carry_max)
+        out["alerts"] = {3.0: stage_starts(times, stages, DROWSY), 1.5: stage_starts(times, stages, WARN)}
+    return out
 
-    levels = ((CAUTION, config.CAUTION_SEC), (DROWSY, config.DROWSY_SEC))
+
+def alarm_scores(scores: dict, clips: list[dict], sec: float) -> dict:
+    """경고 → 재현율, 지연, 시간당 오경보. 오경보는 기준 이상 눈 감김에 속하지 않는 경고다."""
+    total = hits = wrong = 0
+    delays = []
+    for clip in clips:
+        alerts, events = scores[clip["clip"]]["alerts"][sec], clip["events"][sec]
+        total += len(events)
+        hits += round(event_recall(events, alerts) * len(events)) if events else 0
+        wrong += sum(not any(s <= a <= e + ALERT_TOLERANCE_SEC for s, e in events) for a in alerts)
+        delay = alert_delay(events, alerts, sec)
+        if not np.isnan(delay):
+            delays.append(delay)
+    hours = sum(c["hours"] for c in clips)
+    return {"재현율": hits / total if total else float("nan"), "시간당_오경보": false_alarms_per_hour(np.arange(wrong), hours),
+            "지연_초": float(np.mean(delays)) if delays else float("nan")}
+
+
+def method_row(name: str, seed: int, scores: dict, clips: list[dict]) -> dict:
+    row = {"방법": name, "시드": seed}
+    for target in TARGETS:
+        if target in next(iter(scores.values())):
+            row[f"{target}_구간F1"] = prf(*np.sum([scores[c["clip"]][target] for c in clips], axis=0).tolist())["f1"]
+    if "alerts" in next(iter(scores.values())):
+        for sec, key in ((3.0, "3초"), (1.5, "주의")):
+            for metric, value in alarm_scores(scores, clips, sec).items():
+                row[f"{key}_{metric}"] = value
+    return row
+
+
+def bootstrap_f1(seeds: list[dict], clips: list[dict], target: str = "눈감김") -> tuple[float, float]:
+    """클립을 다시 뽑아 시드 평균 F1의 95% 구간을 낸다."""
+    rng = np.random.default_rng(SEED)
+    names = [c["clip"] for c in clips]
+    counts = np.array([[scores[n][target] for n in names] for scores in seeds])
+    values = [np.mean([prf(*counts[s, picks].sum(axis=0).tolist())["f1"] for s in range(len(seeds))])
+              for picks in (rng.integers(0, len(names), len(names)) for _ in range(BOOTSTRAPS))]
+    return tuple(np.quantile(values, [0.025, 0.975]))
+
+
+def window_macro_f1(predictor: Predictor, split: str) -> float:
+    """build_windows.py 창으로 낸 창 단위 macro F1 (NITYMED만). 세션 기준 가중치는 세션 기준 창으로 잰다."""
+    folder = config.DATA / "windows_session" if getattr(predictor, "relative", False) else config.WINDOW_DIR
+    data = np.load(folder / "windows.npz")
+    info = pd.read_csv(folder / "windows.csv", encoding="utf-8-sig")
+    keep = ((info["split"] == split) & (info["source"] == "nitymed")).to_numpy()
+    return classification_metrics(data["y"][keep], predictor.predict(data["X"][keep]).argmax(axis=1))["macro_f1"]
+
+
+def selection_clips(with_webcam: bool = False) -> list[dict]:
+    """선택에 쓰는 클립. NITYMED Val, with_webcam이면 Val2(웹캠 녹화, 사람 라벨을 9번 양식으로 바꾼 것)를 더한다."""
+    table = pd.read_csv(config.SPLIT, encoding="utf-8-sig")
+    clips = [load_clip(c) for c in table[(table["source"] == "nitymed") & (table["split"] == "val")]["clip"]]
+    if with_webcam:
+        webcam = [p.stem for p in sorted(config.WEBCAM_DIR.glob("*.mp4")) if (config.LABEL_DIR / f"{p.stem}.json").exists()]
+        if not webcam:
+            raise SystemExit("Val2 라벨이 없습니다. python -m eval.score_user --set webcam을 먼저 돌려 라벨을 변환하세요")
+        clips += [load_clip(c) for c in webcam]
+    return clips
+
+
+def score_split(split: str, tag: str, with_webcam: bool = False) -> pd.DataFrame:
+    if split == "val":
+        return score_clips(selection_clips(with_webcam), tag, split)
+    table = pd.read_csv(config.SPLIT, encoding="utf-8-sig")
+    clips = [load_clip(c) for c in table[(table["source"] == "nitymed") & (table["split"] == split)]["clip"]]
+    return score_clips(clips, tag, split)
+
+
+def model_scores(clips: list[dict], predictor: Predictor, posts) -> dict:
+    """모델 하나 → 후처리 설정마다 클립별 채점. 확률은 한 번만 계산한다."""
+    probs = {c["clip"]: model_probs(c["df"], predictor) for c in clips}
+    mouths = {c["clip"]: (grid_mouth_closed(c["df"]), grid_yawning(c["df"])) for c in clips}
+    out = {}
+    for post in posts:
+        scores = {}
+        for clip in clips:
+            times, p, judged = probs[clip["clip"]]
+            classes = decide(p, judged, post)
+            flags = {name: classes == value for name, value in TARGETS.items()}
+            flags["하품"] = shown_yawn(classes, *mouths[clip["clip"]], post.yawn_mode)     # 하품은 화면과 같은 판정으로 채점
+            scores[clip["clip"]] = clip_score(clip, times, flags, 1 / config.FPS, post.grace, post.min_close,
+                                              unknown=model_timer_unknown(classes), carry_max=post.carry_max)
+        out[post] = scores
+    return out
+
+
+def score_clips(clips: list[dict], tag: str, window_split: str | None = None, post: Post = NONE,
+                models: tuple[str, ...] | None = None) -> pd.DataFrame:
+    """load_clip 결과 목록 → 모델(시드마다)과 규칙의 채점 행. window_split을 주면 그 분할의 창 macro F1도 낸다.
+    post는 모델에 쓰는 후처리, models를 주면 그 모델 종류만 채점한다."""
+    runs_table = pd.read_csv(config.RUNS / tag / "experiments.csv", encoding="utf-8-sig")
     rows = []
-    for span in true_spans:
-        name, base = locate(span[0])
-        common = {"clip": name, "kind": "정답 이벤트", "start_sec": span[0] - base, "end_sec": span[1] - base,
-                  "length_sec": span[1] - span[0]}
-        reached = [(level, threshold) for level, threshold in levels if span[1] - span[0] >= threshold]
-        if not reached:
-            rows.append({**common, "result": "기준 미만"})
-        for level, threshold in reached:
-            hit = _first_alert(span, np.array(alerts[level]), ALERT_TOLERANCE_SEC)
-            rows.append({**common, "level": level, "result": "놓침"} if hit is None else
-                        {**common, "level": level, "alert_sec": hit - base, "delay_sec": hit - (span[0] + threshold), "result": "맞힘"})
-    for level, threshold in levels:
-        long_events = [e for e in true_spans if e[1] - e[0] >= threshold]
-        for alert in alerts[level]:
-            if _is_false_alarm(alert, long_events):
-                name, base = locate(alert)
-                inside = any(e[0] <= alert <= e[1] + ALERT_TOLERANCE_SEC for e in true_spans)
-                rows.append({"clip": name, "kind": "오경보", "level": level, "alert_sec": alert - base,
-                             "result": "기준보다 짧은 감김" if inside else "정답 감김 밖"})
-    return sorted(rows, key=lambda r: (r["clip"], r.get("start_sec", r.get("alert_sec"))))
+    for row in runs_table.itertuples(index=False):
+        if models is not None and row.모델 not in models:
+            continue
+        predictor = Predictor(Path(row.weights))
+        scores = model_scores(clips, predictor, [post])[post]
+        window = {"창_macroF1": window_macro_f1(predictor, window_split)} if window_split else {}
+        rows.append({**method_row(row.모델, row.seed, scores, clips), **window, "_scores": scores})
+    rules = {EYE_RULES[0]: lambda c: {"눈감김": is_closed(c["df"]["ear"].to_numpy())},
+             EYE_RULES[1]: lambda c: {"눈감김": ear48_closed(c["df"], c["fps"])},
+             YAWN_RULE: lambda c: {"하품": yawning(c["df"]["t"].to_numpy(), c["df"]["mar"].to_numpy())},
+             HEAD_RULE: lambda c: {"고개숙임": head_down(c["df"])}}
+    for name, make in rules.items():
+        scores = {c["clip"]: clip_score(c, c["df"]["t"].to_numpy(), make(c), 1 / c["fps"], **rule_timer_inputs(c["df"])) for c in clips}
+        rows.append({**method_row(name, 0, scores, clips), "_scores": scores})
+    detail = pd.DataFrame(rows)
+    detail.attrs["clips"] = clips
+    return detail
 
 
-def evaluate(clip: np.ndarray, start_sec: np.ndarray, y: np.ndarray, probs: np.ndarray) -> dict:
-    """창 정보와 확률 → 지표."""
-    return evaluate_detail(clip, start_sec, y, probs)[0]
+def summarize(detail: pd.DataFrame) -> pd.DataFrame:
+    clips = detail.attrs["clips"]
+    numeric = detail.drop(columns=["시드", "_scores"])
+    summary = numeric.groupby("방법", sort=False).mean().reset_index()
+    summary.insert(2, "시드_표준편차", numeric.groupby("방법", sort=False)["눈감김_구간F1"].std(ddof=1).reindex(summary["방법"]).to_numpy())
+    eye = [m for m in summary["방법"] if m not in (YAWN_RULE, HEAD_RULE)]
+    ci = {m: bootstrap_f1(list(detail[detail["방법"] == m]["_scores"]), clips) for m in eye}
+    summary.insert(3, "ci_low", [ci.get(m, (np.nan, np.nan))[0] for m in summary["방법"]])
+    summary.insert(4, "ci_high", [ci.get(m, (np.nan, np.nan))[1] for m in summary["방법"]])
+    return summary
 
 
-def evaluate_detail(clip: np.ndarray, start_sec: np.ndarray, y: np.ndarray, probs: np.ndarray) -> tuple[dict, list[dict]]:
-    """창 정보와 확률 → (지표, events.csv 행). 행 순서는 상관없다. 클립마다 시각을 밀어 한 타임라인에 올린 뒤 eval.metrics를 그대로 쓴다."""
-    order = _time_order(clip, start_sec, "windows.npz")
-    clip, start_sec, y, probs = clip[order], start_sec[order], y[order], probs[order]
-    truth = y == EYE_CLOSED
-
-    true_spans, pred_spans, alerts = [], [], {CAUTION: [], DROWSY: []}
-    predicted = np.zeros(len(y), dtype=bool)
-    clips = []
-    offset = 0.0
-    for name in np.unique(clip):
-        rows = np.flatnonzero(clip == name)
-        t = start_sec[rows] - start_sec[rows[0]] + offset
-        for part in continuous_parts(start_sec[rows]):
-            closed = drop_short_closures(closed_from_prob(probs[rows[part], EYE_CLOSED]))
-            predicted[rows[part]] = closed
-            true_spans += segments_from_labels(t[part], truth[rows[part]], STRIDE_SEC, (True,))[True]
-            pred_spans += segments_from_labels(t[part], closed, STRIDE_SEC, (True,))[True]
-            for time, level in timer_alerts(t[part], closed):
-                alerts[level].append(time)
-        clips.append((str(name), t[0] - start_sec[rows[0]], t[-1] + STRIDE_SEC))
-        offset = t[-1] + STRIDE_SEC + CLIP_GAP_SEC
-
-    tp, fp, fn = match_segments(true_spans, pred_spans, LABEL_TOLERANCE_SEC)
-    window_tp = int(np.count_nonzero(truth & predicted))
-    window_fp, window_fn = int(np.count_nonzero(~truth & predicted)), int(np.count_nonzero(truth & ~predicted))
-    caution = level_metrics(true_spans, np.array(alerts[CAUTION]), config.CAUTION_SEC)
-    drowsy = level_metrics(true_spans, np.array(alerts[DROWSY]), config.DROWSY_SEC)
-
-    open_sec = np.count_nonzero(~truth) * STRIDE_SEC    # 오경보 분모: 평가 전체 시간 − 정답 눈 감김 시간
-    def per_hour(count: int) -> float:
-        return false_alarms_per_hour(np.zeros(count), open_sec / 3600) if open_sec else float("nan")
-
-    caution["false_alarms_per_hour"] = per_hour(caution["false_alarms"])
-    drowsy["false_alarms_per_hour"] = per_hour(drowsy["false_alarms"])
-    total = caution["false_alarms"] + drowsy["false_alarms"]
-    argmax = classification_metrics(y, probs.argmax(axis=1))
-    return {
-        "n_windows": len(y),
-        "n_clips": int(len(np.unique(clip))),
-        "total_sec": len(y) * STRIDE_SEC,
-        "open_sec": open_sec,
-        "n_true_events": len(true_spans),
-        "argmax": {"macro_f1": argmax["macro_f1"], "accuracy": argmax["accuracy"],
-                   "f1_per_class": {CLASS_NAMES[c]: f1 for c, f1 in argmax["f1_per_class"].items()}},
-        "span": {"tp": tp, "fp": fp, "fn": fn, **prf(tp, fp, fn)},
-        "window": {"tp": window_tp, "fp": window_fp, "fn": window_fn, **prf(window_tp, window_fp, window_fn)},
-        "caution": caution,
-        "drowsy": drowsy,
-        "false_alarms_total": {"count": total, "per_hour": per_hour(total)},
-        "settings": {
-            "LABEL_TOLERANCE_SEC": LABEL_TOLERANCE_SEC, "ALERT_TOLERANCE_SEC": ALERT_TOLERANCE_SEC,
-            "MIN_CLOSE_SEC": MIN_CLOSE_SEC, "PROB_ON": config.PROB_ON, "PROB_OFF": config.PROB_OFF,
-            "CAUTION_SEC": config.CAUTION_SEC, "DROWSY_SEC": config.DROWSY_SEC, "STRIDE_SEC": STRIDE_SEC,
-        },
-        "limits": list(LIMITS),
-    }, event_rows(true_spans, alerts, clips)
+def pick(summary: pd.DataFrame) -> tuple[str, str]:
+    """Val 요약 → (고른 모델, 이유). 차이가 시드 표준편차 이내면 1D-CNN."""
+    models = summary[summary["방법"].isin(["cnn1d", "lstm"])].set_index("방법")
+    first, second = models["눈감김_구간F1"].sort_values(ascending=False).index[:2]
+    gap = models.loc[first, "눈감김_구간F1"] - models.loc[second, "눈감김_구간F1"]
+    margin = max(models.loc[first, "시드_표준편차"], models.loc[second, "시드_표준편차"])
+    if gap <= margin:
+        return SIMPLER, f"{first}와 {second}의 차이 {gap:.4f}가 시드 표준편차 {margin:.4f} 이내라 {SIMPLER}를 고른다"
+    return first, f"{first}가 {second}보다 {gap:.4f} 높고 시드 표준편차 {margin:.4f}를 넘는다"
 
 
-def to_report(result: dict, title: str) -> str:
-    """지표 → 마크다운 보고서."""
-    levels = [("주의", result["caution"]), ("졸음", result["drowsy"])]
-    settings = ", ".join(f"{name}={value:g}" for name, value in result["settings"].items())
-    total = result["false_alarms_total"]
-    return "\n\n".join([
-        f"# {title}",
-        f"창 {result['n_windows']}개, 클립 {result['n_clips']}개, 전체 {result['total_sec']:g}초, "
-        f"오경보 분모 {result['open_sec']:g}초, 정답 이벤트 {result['n_true_events']}개",
-        f"argmax macro F1 {result['argmax']['macro_f1']:.3f} (타이머를 거치지 않은 창 단위 4클래스 값)",
-        markdown_table(["눈 감김 F1", "F1", "정밀도", "재현율", "맞힘", "잘못 냄", "놓침"],
-                       [[name, m["f1"], m["precision"], m["recall"], m["tp"], m["fp"], m["fn"]]
-                        for name, m in (("구간", result["span"]), ("창", result["window"]))]),
-        markdown_table(["단계", "기준(초)", "이벤트 수", "재현율", "지연 평균", "지연 중앙값", "지연 최대", "경고 수", "오경보 수", "오경보/시간"],
-                       [[name, m["threshold_sec"], m["n_events"], m["recall"], m["delay_mean"], m["delay_median"],
-                         m["delay_max"], m["n_alerts"], m["false_alarms"], m["false_alarms_per_hour"]] for name, m in levels]
-                       + [["합계", None, None, None, None, None, None, None, total["count"], total["per_hour"]]]),
-        f"설정: {settings}",
-        "한계: " + " ".join(result["limits"]),
-    ]) + "\n"
+def judge(model: pd.Series, rules: pd.DataFrame) -> tuple[bool, list[str]]:
+    """고른 모델의 시드 평균 대 눈 규칙 두 가지 중 지표마다 나은 값. 두 조건을 모두 만족해야 향상이다."""
+    best_f1, best_recall, best_alarm = rules["눈감김_구간F1"].max(), rules["3초_재현율"].max(), rules["3초_시간당_오경보"].min()
+    f1_ok = model["눈감김_구간F1"] - best_f1 > model["시드_표준편차"]
+    recall_ok = model["3초_재현율"] >= best_recall
+    alarm_ok = model["3초_시간당_오경보"] < best_alarm
+    notes = [f"1. 눈감김 구간 F1 {model['눈감김_구간F1']:.3f} 대 규칙 최고 {best_f1:.3f}, 차이 {model['눈감김_구간F1'] - best_f1:+.3f}, 시드 표준편차 {model['시드_표준편차']:.3f} → {'통과' if f1_ok else '실패'}",
+             f"2. 3초 재현율 {model['3초_재현율']:.3f} 대 규칙 최고 {best_recall:.3f} → {'통과' if recall_ok else '실패'}",
+             f"   3초 시간당 오경보 {model['3초_시간당_오경보']:.1f} 대 규칙 최저 {best_alarm:.1f} → {'통과' if alarm_ok else '실패'}"]
+    return bool(f1_ok and recall_ok and alarm_ok), notes
 
 
-SUMMARY_COLUMNS = {
-    "argmax macro F1": lambda r: r["argmax"]["macro_f1"],
-    "구간 F1": lambda r: r["span"]["f1"],
-    "창 F1": lambda r: r["window"]["f1"],
-    "3초 재현율": lambda r: r["drowsy"]["recall"],
-    "1.5초 재현율": lambda r: r["caution"]["recall"],
-    "졸음 지연 평균": lambda r: r["drowsy"]["delay_mean"],
-    "주의 지연 평균": lambda r: r["caution"]["delay_mean"],
-    "오경보 수": lambda r: r["false_alarms_total"]["count"],
-    "오경보/시간": lambda r: r["false_alarms_total"]["per_hour"],
-}
+def write(out: Path, detail: pd.DataFrame, summary: pd.DataFrame, head: str) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    detail.drop(columns="_scores").to_csv(out / "seeds.csv", index=False, encoding="utf-8-sig")
+    summary.to_csv(out / "summary.csv", index=False, encoding="utf-8-sig")
+    (out / "report.md").write_text(f"{head}\n\n```\n{summary.round(3).to_string(index=False)}\n```\n", encoding="utf-8")
+    print(head)
+    print(summary.round(3).to_string(index=False))
 
 
-def summarize(results: dict) -> dict:
-    """키별 지표 → 표 머리글별 평균·표준편차(모표준편차). 값이 없는 키는 그 열에서 뺀다."""
-    table = {header: np.array([get(r) for r in results.values()], dtype=float) for header, get in SUMMARY_COLUMNS.items()}
-    return {stat: {header: float(fn(values)) if not np.isnan(values).all() else float("nan") for header, values in table.items()}
-            for stat, fn in (("mean", np.nanmean), ("std", np.nanstd))}
+SELECT_KEYS = ("주의_재현율", "주의_시간당_오경보", "눈감김_구간F1", "3초_재현율", "3초_시간당_오경보")
+FINAL = config.RUNS / "final.json"
+BASE_TAG = "v1"         # 오경보 기준을 정하는 tag (후처리 없음)
+ALARM_FACTOR = 1.5      # 오경보는 기준의 이 배수까지 허용한다 (수정 기획서 F 반영, 사용자 결정 11.03)
 
 
-def to_all_report(title: str, results: dict, summary: dict) -> str:
-    """키 여러 개 → 요약표와 키별 상세."""
-    first = next(iter(results.values()))
-    rows = [[key, *[get(r) for get in SUMMARY_COLUMNS.values()]] for key, r in results.items()]
-    rows += [[name, *summary[stat].values()] for name, stat in (("평균", "mean"), ("표준편차", "std"))]
-    return "\n\n".join([
-        f"# {title}",
-        f"3초 이벤트 {first['drowsy']['n_events']}개, 1.5초 이벤트 {first['caution']['n_events']}개, "
-        f"오경보 분모 {first['open_sec']:g}초. 3초 이벤트가 적고 시간이 짧아 재현율과 시간당 오경보는 값이 크게 흔들린다.",
-        markdown_table(["키", *SUMMARY_COLUMNS], rows),
-        *[to_report(r, key).replace("# ", "## ", 1).strip() for key, r in results.items()],
-    ]) + "\n"
+def select(table: pd.DataFrame, limit: float) -> pd.Series:
+    """README 선택 규칙: 1.5초 시간당 오경보가 limit 이하인 행 중 1.5초 재현율, 눈감김 구간 F1 순으로 높고, 같으면 _order가 작은 행."""
+    ok = table[table["주의_시간당_오경보"] <= limit + 1e-9]
+    return ok.sort_values(["주의_재현율", "눈감김_구간F1", "_order"], ascending=[False, False, True]).iloc[0]
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def tune_post(tag: str, with_webcam: bool = False, base_tag: str = BASE_TAG) -> None:
+    """Val로 후처리 후보 12개를 채점하고 고른 설정을 runs/<tag>/post.json에 쓴다. 모델은 pick.txt 그대로다."""
+    from sequence_model.postprocess import FILE_NAME, save
+
+    base = config.RUNS / tag
+    chosen = (base / "pick.txt").read_text(encoding="utf-8").splitlines()[0]
+    clips = selection_clips(with_webcam)
+    runs_table = pd.read_csv(base / "experiments.csv", encoding="utf-8-sig")
+    rows = []
+    for row in runs_table[runs_table["모델"] == chosen].itertuples(index=False):
+        for post, scores in model_scores(clips, Predictor(Path(row.weights)), CANDIDATES).items():
+            rows.append({"_order": CANDIDATES.index(post), "설정": post.label(), **method_row(chosen, row.seed, scores, clips)})
+    seeds = pd.DataFrame(rows)
+    summary = seeds.drop(columns=["방법", "시드"]).groupby(["_order", "설정"]).mean().reset_index()
+    summary.insert(2, "시드_표준편차", seeds.groupby("_order")["눈감김_구간F1"].std(ddof=1).to_numpy())
+    none = summary[summary["_order"] == 0].iloc[0]
+    # 오경보 기준 = base_tag 후처리 없음 × ALARM_FACTOR (README). base_tag를 먼저 돌려야 한다
+    if tag == base_tag:
+        base_alarm = float(none["주의_시간당_오경보"])
+    else:
+        base_alarm = json.loads((config.RUNS / base_tag / "post.json").read_text(encoding="utf-8"))["base_val"]["주의_시간당_오경보"]
+    limit = base_alarm * ALARM_FACTOR
+    best = select(summary, limit)
+    post = CANDIDATES[int(best["_order"])]
+    where = "Val+Val2" if with_webcam else "Val"
+    reason = (f"{where} 1.5초 오경보 {best['주의_시간당_오경보']:.1f} ≤ 기준 {limit:.1f}({base_tag} 후처리 없음 {base_alarm:.1f} × {ALARM_FACTOR}), "
+              f"1.5초 재현율 {none['주의_재현율']:.3f} → {best['주의_재현율']:.3f}, 눈감김 구간 F1 {none['눈감김_구간F1']:.3f} → {best['눈감김_구간F1']:.3f}")
+    save(base / FILE_NAME, chosen, post, {"val": {k: float(best[k]) for k in SELECT_KEYS}, "base_val": {k: float(none[k]) for k in SELECT_KEYS},
+                                         "reason": reason, "selection": where, "base_tag": base_tag})
+    out = base / ("post_val2" if with_webcam else "post_val")
+    out.mkdir(parents=True, exist_ok=True)
+    seeds.to_csv(out / "seeds.csv", index=False, encoding="utf-8-sig")
+    summary.to_csv(out / "summary.csv", index=False, encoding="utf-8-sig")
+    head = f"{where} 후처리 선택 ({tag}, {chosen}). 고른 설정: {post.label()}. {reason}. 선택에 쓴 데이터라 성능 수치가 아니다."
+    (out / "report.md").write_text(f"{head}\n\n```\n{summary.round(3).to_string(index=False)}\n```\n", encoding="utf-8")
+    print(head)
+    print(summary.round(3).to_string(index=False))
 
 
-def run_all(args: argparse.Namespace, rows: dict) -> dict:
-    """.npz의 probs_ 키를 모두 평가해 report.md, metrics.json, events.csv를 만든다. 모두 평가한 뒤에 저장하고 덮어쓰지 않는다."""
-    if args.probs.suffix != ".npz":
-        raise SystemExit(f"--probs-key {ALL_KEYS}는 .npz에만 쓸 수 있습니다: {args.probs}")
-    paths = {name: args.out_dir / name for name in ("report.md", "metrics.json", "events.csv")}
-    existing = [str(p) for p in paths.values() if p.exists()]
-    if existing:
-        raise SystemExit(f"결과가 이미 있습니다. 다른 --out-dir를 쓰세요: {existing}")
-    with np.load(args.probs, allow_pickle=False) as data:
-        keys = sorted(name for name in data.files if name.startswith("probs_"))
-    if not keys:
-        raise SystemExit(f"{args.probs}에 probs_로 시작하는 키가 없습니다")
+def tune_field(tag: str, field: str, with_webcam: bool = False) -> None:
+    """post.json의 후처리 위에서 하품 판정(yawn_mode) 또는 이어받기 상한(carry_max) 하나만 바꿔 골라 post.json에 더한다.
+    yawn_mode: 하품 구간 F1이 가장 높은 것. carry_max: 1.5초·3초 재현율이 상한 없음보다 낮지 않은 것 중 1.5초 오경보가 가장 적은 것."""
+    from dataclasses import replace
 
-    results, events = {}, []
-    for key in keys:
-        probs = load_probs(args.probs, key, rows)
-        results[key], key_events = evaluate_detail(rows["clip"], rows["start_sec"], rows["y"], probs)
-        events += [{"probs_key": key, **row} for row in key_events]
-    summary = summarize(results)
+    from sequence_model.postprocess import CARRY_CAPS, FILE_NAME, YAWN_MODES, from_dict
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    report = to_all_report(f"{args.probs.name} 평가 ({args.split})", results, summary)
-    paths["report.md"].write_text(report, encoding="utf-8")
-    paths["metrics.json"].write_text(json.dumps(_json_safe({
-        "probs": args.probs.name, "windows": args.windows.name, "split": args.split,
-        "sha256": {"probs": _sha256(args.probs), "windows": _sha256(args.windows)},
-        "summary": summary, "results": results}), ensure_ascii=False, indent=1), encoding="utf-8")
-    pd.DataFrame(events, columns=EVENT_COLUMNS).to_csv(paths["events.csv"], index=False, encoding="utf-8-sig")
-    print(report)
-    print(f"저장: {', '.join(str(p) for p in paths.values())}")
-    return results
-
-
-def _json_safe(value):
-    """NaN은 JSON 표준에 없어 null로 바꾼다."""
-    if isinstance(value, dict):
-        return {k: _json_safe(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_json_safe(v) for v in value]
-    return None if isinstance(value, float) and np.isnan(value) else value
+    base = config.RUNS / tag
+    data = json.loads((base / FILE_NAME).read_text(encoding="utf-8"))
+    post0, chosen = from_dict(data), data["model"]
+    values = YAWN_MODES if field == "yawn_mode" else CARRY_CAPS
+    posts = [replace(post0, **{field: v}) for v in values]
+    clips = selection_clips(with_webcam)
+    runs_table = pd.read_csv(base / "experiments.csv", encoding="utf-8-sig")
+    rows = []
+    for row in runs_table[runs_table["모델"] == chosen].itertuples(index=False):
+        for i, (post, scores) in enumerate(model_scores(clips, Predictor(Path(row.weights)), posts).items()):
+            rows.append({"_order": i, "설정": str(values[i]), **method_row(chosen, row.seed, scores, clips)})
+    seeds = pd.DataFrame(rows)
+    summary = seeds.drop(columns=["방법", "시드"]).groupby(["_order", "설정"]).mean().reset_index()
+    if field == "yawn_mode":
+        best = summary.sort_values(["하품_구간F1", "_order"], ascending=[False, True]).iloc[0]
+    else:
+        none = summary[summary["_order"] == 0].iloc[0]
+        ok = summary[(summary["주의_재현율"] >= none["주의_재현율"] - 1e-9) & (summary["3초_재현율"] >= none["3초_재현율"] - 1e-9)]
+        best = ok.sort_values(["주의_시간당_오경보", "_order"], ascending=[True, True]).iloc[0]
+    value = values[int(best["_order"])]
+    data[field] = value
+    data["val"] = {k: float(best[k]) for k in SELECT_KEYS}
+    data[f"{field}_reason"] = f"{'Val+Val2' if with_webcam else 'Val'}에서 {field}={value} 선택 (README \"하품 판정과 이어받기 상한\")"
+    (base / FILE_NAME).write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    out = base / f"post_{field}"
+    out.mkdir(parents=True, exist_ok=True)
+    seeds.to_csv(out / "seeds.csv", index=False, encoding="utf-8-sig")
+    summary.to_csv(out / "summary.csv", index=False, encoding="utf-8-sig")
+    cols = ["설정", "하품_구간F1", "눈감김_구간F1", "주의_재현율", "주의_시간당_오경보", "3초_재현율", "3초_시간당_오경보"]
+    print(f"{tag} {chosen} {field} 선택: {value}")
+    print(summary[cols].round(3).to_string(index=False))
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="창별 확률로 눈 감김 지표를 계산한다")
-    parser.add_argument("--windows", type=Path, required=True, help="windows.npz")
-    parser.add_argument("--probs", type=Path, required=True, help="창별 확률 (N,4) .npy, 또는 clip·start_sec·y·classes가 든 .npz")
-    parser.add_argument("--probs-key", help=f".npz에서 쓸 확률 키 (예: probs_v01). {ALL_KEYS}면 probs_ 키를 모두 평가해 report.md, metrics.json, events.csv를 만든다")
-    parser.add_argument("--split", choices=("val", "test"), default="val")
-    parser.add_argument("--final", action="store_true", help="--split test를 허용한다. 최종 판정 때만 쓴다")
-    parser.add_argument("--out-dir", type=Path, default=Path("runs"))
-    args = parser.parse_args(argv)
-    if args.split == "test" and not args.final:
-        parser.error("--split test는 --final이 있어야 합니다. 모델 선택은 Val로 합니다")
-    return args
+def final(tags: list[str]) -> None:
+    """각 tag의 post.json(Val 값) → README 규칙으로 하나를 고른다. 오경보 기준은 첫 tag의 후처리 없는 값이다."""
+    from dataclasses import asdict
+    from sequence_model.postprocess import from_dict
+
+    entries, posts = [], {}
+    for i, tag in enumerate(tags):
+        data = json.loads((config.RUNS / tag / "post.json").read_text(encoding="utf-8"))
+        posts[tag] = from_dict(data)
+        entries.append({"_order": i, "tag": tag, "model": data["model"], "설정": posts[tag].label(), **data["val"]})
+    base_alarm = json.loads((config.RUNS / tags[0] / "post.json").read_text(encoding="utf-8"))["base_val"]["주의_시간당_오경보"]
+    table = pd.DataFrame(entries)
+    best = select(table, base_alarm * ALARM_FACTOR)
+    result = {"tag": best["tag"], "model": best["model"], **asdict(posts[best["tag"]]), "base_alarm": base_alarm,
+              "table": table.drop(columns="_order").to_dict(orient="records")}
+    FINAL.write_text(json.dumps(result, ensure_ascii=False, indent=1, default=float), encoding="utf-8")
+    print(table.drop(columns="_order").round(3).to_string(index=False))
+    print(f"고른 것: {result['tag']} {result['model']} {posts[best['tag']].label()} "
+          f"(오경보 기준 {base_alarm * ALARM_FACTOR:.1f} = {base_alarm:.1f} × {ALARM_FACTOR}) → {FINAL}")
 
 
-def main(argv: list[str] | None = None) -> dict:
-    args = parse_args(argv)
-    rows = load_rows(args.windows, args.split)
-    if args.probs_key == ALL_KEYS:
-        return run_all(args, rows)
-    probs = load_probs(args.probs, args.probs_key, rows)
-    result = evaluate(rows["clip"], rows["start_sec"], rows["y"], probs)
+def main() -> None:
+    parser = argparse.ArgumentParser(description="사람 라벨로 모델과 규칙을 채점한다")
+    parser.add_argument("mode", choices=("val", "test", "post", "yawn", "carry", "final"))
+    parser.add_argument("--tag")
+    parser.add_argument("--tags", nargs="+", help="final: 비교할 tag. 첫 tag가 기준이다")
+    parser.add_argument("--with-webcam", action="store_true", help="val·post: NITYMED Val에 Val2(웹캠 녹화)를 더해 채점한다")
+    parser.add_argument("--base-tag", default=BASE_TAG, help="post: 오경보 기준을 정하는 tag (후처리 없음)")
+    args = parser.parse_args()
+    if args.mode == "final":
+        final(args.tags or ["v1", "v2"])
+        return
+    if not args.tag:
+        raise SystemExit("--tag가 필요합니다")
+    base = config.RUNS / args.tag
+    if args.mode == "post":
+        tune_post(args.tag, args.with_webcam, args.base_tag)
+        return
+    if args.mode in ("yawn", "carry"):
+        tune_field(args.tag, "yawn_mode" if args.mode == "yawn" else "carry_max", args.with_webcam)
+        return
 
-    name = "_".join(part for part in ("eval", args.probs.stem, args.probs_key, args.split) if part)
-    report = to_report(result, name)
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    (args.out_dir / f"{name}.json").write_text(
-        json.dumps(_json_safe({"probs": str(args.probs), "probs_key": args.probs_key, "split": args.split, **result}),
-                   ensure_ascii=False, indent=1), encoding="utf-8")
-    (args.out_dir / f"{name}.md").write_text(report, encoding="utf-8")
-    print(report)
-    print(f"저장: {args.out_dir / name}.json, .md")
-    return result
+    if args.mode == "val":
+        detail = score_split("val", args.tag, args.with_webcam)
+        summary = summarize(detail)
+        chosen, reason = pick(summary)
+        where = "Val+Val2" if args.with_webcam else "Val"
+        (base / "pick.txt").write_text(f"{chosen}\n{reason}\n", encoding="utf-8")
+        write(base / ("eval_val2" if args.with_webcam else "eval_val"), detail, summary,
+              f"{where}. 고른 모델: {chosen}. {reason}. 선택에 쓴 데이터라 성능 수치가 아니다.")
+        return
+    report = base / "eval_test" / "report.md"
+    if report.exists():
+        raise SystemExit(f"{report}가 있습니다. Test는 한 번만 채점합니다")
+    chosen = (base / "pick.txt").read_text(encoding="utf-8").splitlines()[0]
+    detail = score_split("test", args.tag)
+    summary = summarize(detail)
+    better, notes = judge(summary.set_index("방법").loc[chosen], summary[summary["방법"].isin(EYE_RULES)])
+    verdict = "규칙 대비 향상이다." if better else "규칙 대비 향상이 아니다."
+    write(base / "eval_test", detail, summary, f"Test. Val이 고른 모델: {chosen}.\n\n판정: {verdict}\n\n" + "\n".join(notes))
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@
 | `perclos.py` | 최근 `WINDOW_SEC`초 중 눈 감은 프레임 비율 |
 | `closure.py` | 최근 `WINDOW_SEC`초 안 가장 긴 연속 눈 감음(초) |
 | `yawn.py` | 최근 `WINDOW_SEC`초 하품 횟수. `mar > MAR_YAWN`이 `YAWN_MIN_SEC` 이상이면 1회 |
-| `head.py` | 최근 `WINDOW_SEC`초 중 고개 숙인(`pitch > PITCH_DOWN`) 프레임 비율 |
+| `head.py` | 최근 `WINDOW_SEC`초 중 고개 숙인(`HeadDown`) 프레임 비율 |
 | `score.py` | 지표 4개를 0~1로 맞춰 가중합한 졸음 점수(0~100)와 단계 |
 
 지표는 모두 창이 `WINDOW_SEC`만큼 차기 전에는 NaN이다.
@@ -27,9 +27,11 @@
 | `CAUTION_SEC` / `DROWSY_SEC` | 1.5 / 3.0 | 기획서 3-4. 연속 눈 감김 주의 / 졸음 |
 | `BEST_PARAMS_PATH` / `EAR_BASE_PERCENTILE` | `auto_label/best_params.json` / 75 | 타이머 입력의 임계값 = `ear_ratio` × 클립 EAR P75. 파일이 없으면 `EAR_CLOSED` |
 | `PROB_ON` / `PROB_OFF` | 0.6 / 0.4 | 기획서 3-3. 모델 확률 히스테리시스 |
+| `BEST_PARAMS_PATH` / `EAR_BASE_PERCENTILE` | `auto_label/best_params.json` / 75 | 눈 감음 임계값 = `ear_ratio`(0.6) × 평소 EAR |
 | `MAR_YAWN` | 0.3 | 하품 영상: 하품 최고 0.47~0.50, 입 다묾 최고 0.06 |
 | `YAWN_MIN_SEC` | 1.0 | 짧은 입 벌림과 구분. 하품 길이 1.47~2.17초 |
-| `PITCH_DOWN` | 15.0 | 고개 숙임 중앙값 +19.6, 정면 +1~+9.4 |
+| `PITCH_DOWN_RELATIVE` / `PITCH_DOWN_ABSOLUTE` | 17.5 / 25.0 | 기술서 3.3. 정면 pitch 대비 기준, 정면 pitch가 아직 없을 때의 기준 |
+| `FRONT_PITCH_SEC` | 60 | 정면 pitch를 구하는 세션 시작 구간(초) |
 | `WINDOW_SEC` | 7 | 팀 합의 (15 FPS 기준 105행) |
 | `PERCLOS_FULL` / `CLOSURE_FULL_SEC` / `YAWN_FULL` | 0.5 / 3.0초 / 1회 | 지표가 1.0이 되는 값 (그 위는 1.0으로 자름) |
 | `WEIGHTS` | 0.25 × 4 | 근거 데이터가 없어 일단 모두 같게 |
@@ -68,5 +70,4 @@ python -m rule_based.score outputs/landmarks/<이름>.csv     # 1초마다 지�
 ## 정할 것
 - 얼굴 미검출 프레임 처리: 지금은 NaN이면 감음 구간이 끊긴다. 짧은 끊김을 채울 `MAX_GAP_SEC`를 정한다 (육주영 님 `sequence_model/config.py`의 `FILL_MAX_SEC`와 맞출 것)
 - 가중치·단계 경계: 지금은 같은 가중치. 졸음 데이터로 다시 정한다
-- 정면 pitch 보정: 정면 pitch가 녹화마다 +1~+9.4로 달라 `PITCH_DOWN`(15)까지 여유가 약 5도뿐이다. 시작할 때 몇 초간 정면 pitch를 재서 빼는 보정을 검토한다 (후속 과제)
 - **데모 전 마지막 확인:** 말할 때 입 벌림이 하품으로 잘못 세지지 않는지 (`MAR_YAWN`, `YAWN_MIN_SEC`). 하품 영상만 녹화했고 말하는 영상은 아직 확인하지 않았다

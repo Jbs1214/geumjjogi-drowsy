@@ -1,6 +1,6 @@
 # Drowsy Driving Detection: Project Proposal
 
-Team 금쪽같은 우리 사이 (기획서): Jang Beomsu (lead), Kim Minyoung, Yuk Juyoung | Version 2026-11-04 | Presentation 2026-11-09 (Mon)
+Team 금쪽같은 우리 사이 (기획서): Jang Beomsu (lead), Kim Minyoung, Yuk Juyoung | Version 2026-11-05 | Presentation 2026-11-09 (Mon)
 
 ## 1 Overview
 
@@ -9,7 +9,7 @@ From webcam video, the system analyzes eye closure, yawning, and head-down postu
 | Item | Content |
 |---|---|
 | Data | NITYMED (night, real car, 21 drivers), DMD drowsiness part (day, 13 drivers' worth), self-recorded (indoor acting) |
-| Goals | Drowsy (3 s) event recall of 90% or higher; eye-closure F1 better than the rule-based baseline; webcam 15 FPS or higher |
+| Goals | Drowsy (3 s) event recall of 90% or higher; yawn detection that keeps pace with the MAR rule and also catches hand-covered yawns; webcam 15 FPS or higher. Eye-closure F1 is reported against the rule-based baseline |
 | Deliverables | Drowsiness stage warnings, yawn alerts, rule vs. learned comparison table, label data, Streamlit demo, post-drive summary |
 | Technology | MediaPipe Face Landmarker, OpenCV, PyTorch (1D-CNN, LSTM), Streamlit |
 | Out of scope | Regulatory certification, in-vehicle validation, drowsiness prediction, Eye Gaze, IR cameras, PERCLOS / drowsiness score |
@@ -31,7 +31,7 @@ From webcam video, the system analyzes eye closure, yawning, and head-down postu
 | Face landmarks | MediaPipe outputs 478 points per frame. | Pretrained model, no training of our own |
 | Landmark selection | Uses only eye, mouth, and nose-tip points. | Only the points needed |
 | Feature computation | Computes features such as EAR, MAR, and head angles. | Every frame |
-| Judgment | Sets the drowsiness stage from continuous eye-closure time. | Rule-based MVP, then compare 1D-CNN and LSTM |
+| Judgment | Sets the drowsiness stage from continuous eye-closure time. | Rule-based MVP, then compare 1D-CNN and LSTM. The final setup uses the rule and timer for eye closure and a yawn-only model for yawns. |
 | Warning | Shows on-screen indicators and sounds an alarm by stage. | Drowsiness stages below |
 
 | Drowsiness stage | Continuous eye closure | Action |
@@ -102,7 +102,7 @@ The model only answers whether the eyes are closed right now; time is measured b
 | 4 | Threshold calibration | Threshold search | |
 | 5 | Auto labeling | Generate draft labels | |
 | 6 | Human review | Review eye-closure and yawn spans | Human step |
-| 7 | Training window generation | Time windows, 4-class ground truth | Final result of each flow |
+| 7 | Training window generation | Time windows, 4-class and yawn ground truth | Final result of each flow |
 
 Videos, features, and labels are not uploaded to git; they are shared through the private team Google Drive.
 
@@ -114,11 +114,13 @@ Legend: external input / data; human step; final result of each flow.
 |---|---|---|
 | Training window | Time window in seconds, common FPS | Data FPS differs (25 and 29.76), so we cut by seconds and then resample. |
 | Stride | Separate settings for training and real time | Adjacent windows overlap heavily, so training uses a wide stride and real time matches the response speed. |
-| Model output | 4-class softmax | Normal, eye closure, yawn, head-down. Uncertain is an exclusion mask, not a class. |
+| Time-series model | 3-second window of face features | The timer measures how long the eyes stay closed, but events such as yawning unfold over seconds and are hard to judge from one frame. A window lets the model use that change. Face features instead of images keep data needs and real-time load low. |
+| Model type | Small 1D-CNN and LSTM | They are two standard sequence approaches: 1D-CNN finds short local patterns, and LSTM follows order over time. With limited data and a real-time target, we keep both small and compare them on the same input and evaluation. |
+| Model output | 4-class softmax for comparison, yawn-only binary model for the final setup | The 4-class model (normal, eye closure, yawn, head-down) is compared with the rules. The yawn-only model is not limited by eye closure in the same output. Uncertain is an exclusion mask, not a class. |
 | Answer rule | Based on the current state | Eye closure and head-down are labeled by the current state; yawn by the event that continues. |
 | Data split | By driver | The same person never appears in both training and evaluation; normalization values are computed from training data only. |
 | Head-down | Separate from drowsiness stage | The protocol has no criterion for it. Head-down with open eyes is only indicated; head-down during eye closure keeps counting; prolonged "cannot judge" gives a check-needed warning. |
-| Yawn | Caution when repeated | People yawn without being sleepy, so one yawn does not change the stage (stage unchanged). A cooldown follows each alert. |
+| Yawn | Caution when repeated | People yawn without being sleepy, so one yawn does not change the stage (stage unchanged). A cooldown follows each alert. The yawn-only model covers hand-covered yawns that MAR misses. |
 
 Numbers, formulas, and exception handling for each item are in the technical specification.
 
@@ -129,10 +131,10 @@ Repository: https://github.com/Jbs1214/geumjjogi-drowsy
 | Folder | Role |
 |---|---|
 | `dataset/` | Pair videos and labels, convert labels, split |
-| `auto_label/` | Feature extraction, thresholds, auto-labeling tools |
+| `auto_label/` | Feature extraction, human review tools |
 | `landmarks/` | Landmark indices, feature computation |
 | `rule_based/` | Eye-closure timer, yawn and head-down handling, warnings |
-| `sequence_model/` | 1D-CNN / LSTM training and evaluation |
+| `sequence_model/` | 1D-CNN / LSTM and yawn-only model training |
 | `eval/` | Evaluation scripts, per-condition result tables |
 | `demo/` | Streamlit real-time demo |
 
@@ -176,9 +178,11 @@ Repository: https://github.com/Jbs1214/geumjjogi-drowsy
 | Metric | Target |
 |---|---|
 | Drowsy (3 s) event recall | 90% or higher |
-| Eye-closure span F1 | Better than the rule-based baseline |
+| Hand-covered yawn recall | Higher than the MAR rule |
+| Bare-mouth yawn recall | Within 0.05 of the MAR rule |
+| Yawn false alarms | 10 per hour or fewer |
 | Processing speed (measured on webcam) | 15 FPS or higher |
-| Other metrics | Reported as values: caution recall, yawn, head-down, false alarm rate, warning delay |
+| Other metrics | Reported as values: eye-closure span F1 against the rule-based baseline, caution recall, head-down, false alarm rate, warning delay |
 
 ### 7-4 Limitations and responses
 

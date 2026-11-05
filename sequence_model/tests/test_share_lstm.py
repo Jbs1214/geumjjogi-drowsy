@@ -12,7 +12,7 @@ from unittest import mock
 import numpy as np
 import pandas as pd
 
-from eval import evaluate as ev
+from eval import window_eval as ev
 from sequence_model import share_lstm as sl
 from sequence_model import train_lstm as tl
 from sequence_model.build_windows import CLASS_NAMES

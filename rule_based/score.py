@@ -18,13 +18,13 @@ from rule_based.perclos import perclos
 from rule_based.yawn import yawn_count
 
 
-def indicators(t: np.ndarray, ear: np.ndarray, mar: np.ndarray, pitch: np.ndarray) -> pd.DataFrame:
+def indicators(t: np.ndarray, ear: np.ndarray, mar: np.ndarray, pitch: np.ndarray, ear_l: np.ndarray, ear_r: np.ndarray) -> pd.DataFrame:
     """프레임마다 지표 4개를 0~1로 맞춘 표. 열 이름은 config.WEIGHTS의 키."""
     return pd.DataFrame({
         "perclos": np.clip(perclos(t, ear) / config.PERCLOS_FULL, 0, 1),
         "closure": np.clip(longest_closure(t, ear) / config.CLOSURE_FULL_SEC, 0, 1),
         "yawn": np.clip(yawn_count(t, mar) / config.YAWN_FULL, 0, 1),
-        "head_down": head_down_ratio(t, pitch),
+        "head_down": head_down_ratio(t, pitch, ear_l, ear_r),
     })
 
 
@@ -48,7 +48,7 @@ def main() -> None:
 
     df = add_features(pd.read_csv(args.csv))
     t = df["t"].to_numpy()
-    parts = indicators(t, df["ear"].to_numpy(), df["mar"].to_numpy(), df["pitch"].to_numpy())
+    parts = indicators(t, *(df[name].to_numpy() for name in ("ear", "mar", "pitch", "ear_l", "ear_r")))
     df = pd.concat([df[["t"]], parts], axis=1)
     df["score"] = drowsiness_score(parts)
     df["stage"] = stage(df["score"])

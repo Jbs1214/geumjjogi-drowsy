@@ -19,17 +19,9 @@ def is_closed(ear: np.ndarray) -> np.ndarray:
     return under(ear, config.EAR_CLOSED)
 
 
-def ear_threshold(ear: np.ndarray, path: str | Path = config.BEST_PARAMS_PATH) -> tuple[float, str]:
-    """클립의 ear → (타이머 입력용 임계값, 값의 출처). 파일이 없거나 얼굴 프레임이 5개 이하이면 config.EAR_CLOSED."""
-    path = Path(path)
-    if not path.exists():
-        return config.EAR_CLOSED, f"{path} 없음, EAR_CLOSED"
-    valid = np.asarray(ear, dtype=float)
-    valid = valid[~np.isnan(valid)]
-    if len(valid) <= 5:
-        return config.EAR_CLOSED, "얼굴 프레임 부족, EAR_CLOSED"
-    ratio = json.loads(path.read_text(encoding="utf-8"))["params"]["ear_ratio"]
-    return float(ratio * np.percentile(valid, config.EAR_BASE_PERCENTILE)), f"{path}: ear_ratio {ratio:g} × P{config.EAR_BASE_PERCENTILE}"
+def best_ear_ratio() -> float:
+    """best_params.json의 ear_ratio. 눈 감음 임계값은 이 값 × 평소 EAR이다 (기술서 3.1)."""
+    return float(json.loads(config.BEST_PARAMS_PATH.read_text(encoding="utf-8"))["params"]["ear_ratio"])
 
 
 def closed_runs(t: np.ndarray, closed: np.ndarray) -> list[tuple[float, float]]:

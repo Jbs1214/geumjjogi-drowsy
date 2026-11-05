@@ -16,10 +16,9 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from eval.evaluate import markdown_table
+from eval.window_eval import markdown_table
 from eval.metrics import classification_metrics
 from sequence_model.build_windows import CLASS_NAMES, EYE_CLOSED, FEATURE_COLUMNS, HEAD_DOWN, WINDOW_FRAMES
-from sequence_model.models import LSTMClassifier
 
 DEFAULT_BUNDLE = Path("data/processed/bundle_20261103_84e7bf4")
 HIDDEN = 32
@@ -34,6 +33,19 @@ POOLS = {"mean": "lstm", "last": "lstm_last"}   # 풀링 → 체크포인트 mod
 N_CLASSES = len(CLASS_NAMES)
 FACE = FEATURE_COLUMNS.index("face")
 NORM_COLUMNS = [i for i in range(len(FEATURE_COLUMNS)) if i != FACE]
+
+
+class LSTMClassifier(nn.Module):
+    """이 스크립트의 LSTM. 전체 출력 평균 하나만 쓴다. models.LSTMClassifier(평균 + 끝 0.5초)와 가중치가 호환되지 않는다."""
+
+    def __init__(self, n_features: int, n_classes: int, hidden: int = 32, dropout: float = 0.3) -> None:
+        super().__init__()
+        self.lstm = nn.LSTM(n_features, hidden, batch_first=True)
+        self.head = nn.Sequential(nn.Dropout(dropout), nn.Linear(hidden, n_classes))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        output, _ = self.lstm(x)
+        return self.head(output.mean(dim=1))
 
 
 class LastStepLSTM(LSTMClassifier):

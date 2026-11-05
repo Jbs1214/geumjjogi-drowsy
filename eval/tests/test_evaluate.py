@@ -9,9 +9,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from eval import evaluate as ev
+from eval import window_eval as ev
 from eval.metrics import alert_delay
-from rule_based.alarm import CAUTION, DROWSY
+from eval.window_eval import CAUTION, DROWSY
 from sequence_model.build_windows import CLASS_NAMES
 
 

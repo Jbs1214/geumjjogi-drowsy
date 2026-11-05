@@ -11,7 +11,7 @@ from unittest import mock
 import numpy as np
 import torch
 
-from eval import evaluate as ev
+from eval import window_eval as ev
 from sequence_model import train_lstm as tl
 from sequence_model.build_windows import CLASS_NAMES, FEATURE_COLUMNS, WINDOW_FRAMES
 from sequence_model.models import build_model
@@ -272,7 +272,7 @@ class PoolTest(Base):
 
     def test_predictor_refuses_last(self):
         with self.assertRaises(ValueError):
-            build_model(tl.POOLS["last"], 11, 4)
+            build_model(tl.POOLS["last"])
 
     def test_final_uses_checkpoint_pool(self):
         self.call("--epochs", "1", "--pool", "last")

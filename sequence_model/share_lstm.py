@@ -18,8 +18,8 @@ from pathlib import Path
 
 import numpy as np
 
-from eval import evaluate as ev
-from eval.evaluate import markdown_table
+from eval import window_eval as ev
+from eval.window_eval import markdown_table
 from eval.metrics import classification_metrics
 from rule_based import config as alarm_config
 from sequence_model import train_lstm as tl
