@@ -332,7 +332,7 @@ DMD를 고른 이유: 후보 4개(DMD, UTA-RLDD, YawDD, NTHU-DDD) 중 주간 실
 **코드 반영 대기 (2026-11-05 기준).** 이 문서는 합의된 기준이고, 아래 항목은 코드가 아직 따라오지 않았습니다.
 
 - `feat/seq-pipeline` 병합: `dataset/`, `auto_label/`, `demo/`, 최상위 `config.py`가 아직 `main`에 없습니다.
-- 구현 완료, 병합 대기: `feat/head-pitch`(고개 숙임 상대 pitch 17.5도), `feat/dmd-convert`(`dataset/dmd_convert.py`), `feat/yawn-model`(하품 전용 모델의 학습과 실시간 연결, 하품 끊김 1.0초 병합과 길이 상한 7초). 세 브랜치 모두 `feat/seq-pipeline` 기준입니다.
+- 구현 완료, 병합 대기: `feat/head-pitch`(고개 숙임 상대 pitch 17.5도), `feat/dmd-convert`(`dataset/dmd_convert.py`), `feat/yawn-model`(하품 전용 모델의 학습과 실시간 연결, 하품 끊김 1.0초 병합과 길이 상한 7초). `feat/seq-pipeline` 위에 이 순서로 쌓여 있어 이 순서로 병합합니다.
 - `calibrate`·`label`은 저장소 밖 이전 도구입니다.
 - 영상 파일 데모(`demo/demo_video.py`)와 Streamlit 결과 그래프는 아직 4클래스 모델의 판정을 씁니다.
 - 마스크 착용 시 하품 감지 끄기.
