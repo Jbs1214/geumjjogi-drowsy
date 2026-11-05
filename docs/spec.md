@@ -336,12 +336,12 @@ DMD를 고른 이유: 후보 4개(DMD, UTA-RLDD, YawDD, NTHU-DDD) 중 주간 실
 - `calibrate`·`label`은 저장소 밖 이전 도구입니다.
 - 판정 로그(6.2)의 `wall_time`·클래스 확률 기록과 선글라스 판정 불가(8장)는 코드에 없습니다. 선글라스는 기준값을 정할 영상이 없습니다.
 
-**팀 결정 필요 (2026-11-05 기준).**
+**기준 정리 (2026-11-05).** 코드와 문서가 어긋났던 항목을 아래처럼 정했습니다.
 
-- 파이프라인: `main`과 `feat/seq-pipeline`의 `build_windows`·`evaluate`가 서로 다릅니다. `main`은 `split.json`만 읽고, `feat/seq-pipeline`은 `data/split.csv`를 읽어 `split.json`을 내보냅니다. 어느 쪽을 기준으로 합칠지 정해야 합니다.
-- 분할 파일: `data/split.csv`는 데이터라 저장소에 없고 공유 묶음에도 없습니다. NITYMED 분할은 `split_nitymed.csv`와 41클립 모두 같습니다. CSV를 공유할지 문서를 `split.json`으로 바꿀지 정해야 합니다.
-- DMD 분할: 지금 `data/split.csv`는 16클립을 train 13(운전자 11명), val 3(운전자 2명)으로 두고 `sig3`·`sig4`·`yawn1`이 이 분할로 학습했습니다. 16클립 전체를 평가용으로 빼면 이 가중치의 DMD 평가는 학습한 운전자가 섞여 무효이고, 손 가린 하품 학습 데이터도 없어집니다.
-- `best_params.json`: 실시간 규칙(`LiveRule`)은 평소 EAR의 0.48배를 쓰고 이 파일을 읽지 않습니다. `main`의 규칙은 `auto_label/best_params.json`을 읽지만 저장소에 없어 `EAR_CLOSED`(0.2)로 동작합니다. 위치와 사용 여부, DMD로 다시 구할지를 정해야 합니다.
+- 파이프라인: 이 문서의 폴더 구조(`dataset/`, `auto_label/`, `demo/`, 최상위 `config.py`)와 `data/split.csv`를 따르는 `feat/seq-pipeline`이 기준입니다. `main`의 `train_lstm`·`share_lstm`과 창 단위 평가(`eval/window_eval.py`)는 `feat/main-merge`에서 이 구조에 맞춰 유지합니다.
+- 분할 파일: 2.6의 `data/split.csv` 하나입니다. `split.json`은 `build_windows`가 내보내는 사본이고 입력이 아닙니다.
+- DMD 분할: 2.6의 표대로 고정합니다. 16클립 전체를 평가 세트로 쓰지 않습니다.
+- `best_params.json`: 5.5의 현재 값을 그대로 씁니다.
 
 ## 10. 참고 논문
 
