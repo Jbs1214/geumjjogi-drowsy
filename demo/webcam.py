@@ -25,7 +25,7 @@ from PIL import Image, ImageDraw
 import config
 from sequence_model.build_windows import feature_matrix
 from sequence_model.postprocess import NONE, Hysteresis, Post, display_classes, for_weights, yawn_classes
-from rule_based.alarm import DROWSY, NORMAL, ClosureTimer
+from rule_based.alarm import DROWSY, NORMAL, WARN, ClosureTimer
 from rule_based.alerts import Event, MouthClosedWatch, UnknownWatch, YawnRepeat, YawnTracker, summary_markdown
 from rule_based.head import HeadDown
 from demo.cfr import TimedWriter
@@ -50,6 +50,22 @@ BASELINE_EVERY_SEC = 0.5    # 평소 EAR을 다시 구하는 간격
 BEEP_HZ, BEEP_MS, BEEP_GAP_SEC = 1000, 300, 0.2
 
 
+def load_yawn(path: Path | None):
+    """하품 전용 가중치. 파일이 없으면 None이고 4클래스 판정만 쓴다."""
+    from sequence_model.train_yawn import YawnPredictor
+
+    if path is None or not Path(path).exists():
+        return None
+    return YawnPredictor(path)
+
+
+def alarm_stage(judge: "LiveJudge", rule: "LiveRule") -> int:
+    """화면과 경고음의 단계. 최종 구성(기술서 0장)은 규칙 눈 감김 단계와 하품 알림 중 높은 쪽이고, 아니면 모델 단계다."""
+    if not judge.final:
+        return judge.stage
+    return max(rule.stage, WARN) if judge.history and judge.yawn_repeat.active(judge.history[-1][0]) else rule.stage
+
+
 def frame_vector(raw: dict) -> np.ndarray:
     """LandmarkExtractor.process() 한 행 → 특징 11개 벡터 (feature_matrix와 같은 미검출 처리)."""
     from landmarks.extract import COLUMNS
@@ -61,12 +77,18 @@ def frame_vector(raw: dict) -> np.ndarray:
 class LiveJudge:
     """프레임을 하나씩 받아 15 FPS 격자마다 눈감김 타이머를 잰다. 모델은 0.2초(격자 JUDGE_EVERY칸)마다 판정하고 사이는 유지한다.
     타이머 입력은 파일 평가(eval.evaluate.model_scores)와 같다: 판정 불가·고개숙임은 직전 눈 감김이 0.5초 이상이면 이어서 센다
-    (최종 기획서 5-1·5-3). 세션 기준 가중치(v7~)면 특징을 session.SessionBaseline으로 바꾼다."""
+    (최종 기획서 5-1·5-3). 세션 기준 가중치(v7~)면 특징을 session.SessionBaseline으로 바꾼다.
+    yawn_predictor를 주면 최종 구성이다: 하품은 하품 전용 모델이 맡고, 입 모양과 4클래스 하품 출력은 쓰지 않는다."""
 
-    def __init__(self, predictor, post: Post = NONE) -> None:
+    def __init__(self, predictor, post: Post = NONE, yawn_predictor=None) -> None:
         from landmarks.session import SessionBaseline
 
-        self._predictor = predictor
+        if yawn_predictor is not None and yawn_predictor.relative != getattr(predictor, "relative", False):
+            raise SystemExit("하품 전용 모델과 4클래스 모델의 입력 기준(세션 기준 여부)이 다릅니다")
+        self._predictor, self._yawn_predictor = predictor, yawn_predictor
+        self.final = yawn_predictor is not None
+        self._yawn_on, self._yawn_since = False, None
+        self.yawning = False
         self._baseline = SessionBaseline() if getattr(predictor, "relative", False) else None
         self._post = post
         self._prev: tuple[float, np.ndarray, float, bool] | None = None
@@ -76,7 +98,7 @@ class LiveJudge:
         self._held: np.ndarray | None = None
         self._hysteresis = Hysteresis(post)
         self._timer = ClosureTimer(grace_sec=post.grace, carry_max_sec=post.carry_max)
-        self.yawn_repeat, self.unknown_watch = YawnRepeat(), UnknownWatch()
+        self.yawn_repeat, self.unknown_watch = YawnRepeat(0.0) if self.final else YawnRepeat(), UnknownWatch()
         self.events: list[Event] = []
         self.history: list[tuple[float, int, int, int, float]] = []     # (격자 시각, 클래스, 단계, 화면 클래스, 연속 눈 감김 초)
         self.state, self.stage, self.closed_sec, self.shown = -1, NORMAL, 0.0, -1
@@ -100,38 +122,57 @@ class LiveJudge:
         self._prev = (t, vector, mouth_closed, rule_yawn)
         due = [w for _, _, w, _, _ in ticks if w is not None]
         probs = iter(self._predictor.predict(np.stack(due)) if due else [])
+        yawn_probs = iter(self._yawn_predictor.predict(np.stack(due))[:, 0] if due and self.final else [])
         face = config.FEATURES.index(config.FACE_COLUMN)
         for g, j, window, grid_mouth, grid_rule in ticks:
             if window is not None:
                 prob = next(probs)
                 ok = 1 - window[:, face].mean() <= config.MAX_MISSING and window[-1, face] > 0.5
                 self._held = prob if ok else None
+                if self.final:
+                    self._yawn_on = bool(ok and next(yawn_probs) >= config.YAWN_ENTER)
             state = self._hysteresis.step(self._held if j >= 0 else None)
             before = self.stage
             self.stage = self._timer.update(g, state == config.CLOSED, unknown=state < 0 or state == config.HEAD)
             self.state, self.closed_sec = state, self._timer.elapsed
             # 화면: 0.5초보다 짧은 눈감김(깜빡임)과 입을 다문 지 0.5초가 지난 하품은 정상으로 보인다. 경고 단계는 그대로다
-            yawned = yawn_classes(np.array([state]), np.array([grid_mouth]), np.array([grid_rule]), self._post.yawn_mode)
-            self.shown = int(display_classes(yawned, np.array([self.closed_sec]), mouth_closed=np.array([grid_mouth]))[0])
+            if self.final:
+                self.yawning = self._yawn_step(g)
+                shown = int(display_classes(np.array([config.NORMAL if state == config.YAWN else state]), np.array([self.closed_sec]))[0])
+                self.shown = config.YAWN if shown == config.NORMAL and self.yawning else shown
+            else:
+                yawned = yawn_classes(np.array([state]), np.array([grid_mouth]), np.array([grid_rule]), self._post.yawn_mode)
+                self.shown = int(display_classes(yawned, np.array([self.closed_sec]), mouth_closed=np.array([grid_mouth]))[0])
             self.history.append((g, state, self.stage, self.shown, self.closed_sec))
-            if self.stage > before:
+            if self.stage > before and not self.final:
                 self.events.append(Event(g, "졸음" if self.stage == DROWSY else "주의"))
-            if self.yawn_repeat.update(g, self.shown == config.YAWN):
+            if self.yawn_repeat.update(g, self.yawning if self.final else self.shown == config.YAWN):
                 self.events.append(Event(g, "하품 주의"))
             if j >= 0 and self.unknown_watch.update(g, state < 0):
                 self.events.append(Event(g, "확인 필요"))
 
 
+    def _yawn_step(self, g: float) -> bool:
+        """격자 시각 → 하품 전용 모델의 켜짐이 YAWN_MODEL_MIN_SEC 이상 이어졌는지."""
+        if not self._yawn_on:
+            self._yawn_since = None
+            return False
+        if self._yawn_since is None:
+            self._yawn_since = g
+        return g - self._yawn_since >= config.YAWN_MODEL_MIN_SEC - 1e-9
+
+
 class LiveRule:
     """규칙 EAR 0.48. 평소 EAR은 지금까지 들어온 검출 프레임의 90% 분위다."""
 
-    def __init__(self) -> None:
+    def __init__(self, events: list[Event] | None = None) -> None:
+        self._events = events           # 최종 구성이면 규칙의 주의·졸음을 이 목록에 남긴다
         self._ears: list[float] = []
         self._t0: float | None = None
         self._baseline, self._baseline_t = np.nan, -np.inf
         self._timer = ClosureTimer()
         self._head = HeadDown()
-        self.ready, self.stage = False, NORMAL
+        self.ready, self.stage, self.closed_sec = False, NORMAL, 0.0
         self.history: list[tuple[float, int]] = []
 
     def update(self, t: float, found: bool, ear: float, pitch: float = float("nan"), ear_l: float = float("nan"), ear_r: float = float("nan")) -> None:
@@ -145,7 +186,11 @@ class LiveRule:
         self.ready = t - self._t0 >= RULE_MIN_SEC
         closed = self.ready and found and not np.isnan(ear) and ear < EAR_RATIO * self._baseline
         head_down = self._head.update(t, pitch, ear_l, ear_r)
+        before = self.stage
         self.stage = self._timer.update(t, closed, unknown=(not found) or head_down)
+        self.closed_sec = self._timer.elapsed
+        if self._events is not None and self.stage > before:
+            self._events.append(Event(t, "졸음" if self.stage == DROWSY else "주의"))
         self.history.append((t, self.stage))
 
 
@@ -186,7 +231,8 @@ def draw(frame: np.ndarray, judge: LiveJudge, rule: LiveRule, ear: float, mar: f
     height, width = frame.shape[:2]
     scale = max(width / 1280, 0.6)
     margin = round(16 * scale)
-    board = panel(judge.shown, judge.stage, judge.closed_sec, rule.stage, ear, mar, scale)
+    stage = alarm_stage(judge, rule)
+    board = panel(judge.shown, stage, rule.closed_sec if judge.final else judge.closed_sec, rule.stage, ear, mar, scale)
     blend(frame, board, margin, margin)
     note = f"처리 {rate:.1f} FPS" + ("" if rule.ready else " / 규칙 준비 중") + " / q 종료"
     top = margin + board.shape[0] + round(6 * scale)
@@ -195,7 +241,7 @@ def draw(frame: np.ndarray, judge: LiveJudge, rule: LiveRule, ear: float, mar: f
                                     ("확인 필요 (판정 불가 3초)", judge.unknown_watch.active)) if on]
     for i, text in enumerate(alerts):
         blend(frame, info_box(text, scale * 1.2), margin, top + round((i + 1) * 40 * scale))
-    if judge.stage == DROWSY:
+    if stage == DROWSY:
         cv2.rectangle(frame, (0, 0), (width - 1, height - 1), STAGE_RGB[DROWSY][::-1], max(round(12 * scale), 2))
 
 
@@ -252,7 +298,8 @@ def record_blind(source: str, out: Path, show: bool, max_seconds: float | None) 
     return {"frames": frames, "seconds": time.perf_counter() - began, "saved": out, "saved_frames": writer.frames}
 
 
-def run(source: str, weights: Path, show: bool, sound: bool, max_seconds: float | None, record: Path | None = None) -> dict:
+def run(source: str, weights: Path, show: bool, sound: bool, max_seconds: float | None, record: Path | None = None,
+        yawn_weights: Path | None = config.YAWN_WEIGHTS) -> dict:
     from landmarks.extract import LandmarkExtractor
     from sequence_model.models import Predictor
 
@@ -260,8 +307,10 @@ def run(source: str, weights: Path, show: bool, sound: bool, max_seconds: float 
     writer = TimedWriter(record) if record else None
     predictor = Predictor(weights)
     post = for_weights(weights, predictor.name)
-    print(f"모델 {weights}, 후처리 {post.label()}", flush=True)
-    judge, rule, mouth_watch, yawn_tracker = LiveJudge(predictor, post), LiveRule(), MouthClosedWatch(), YawnTracker()
+    yawn_predictor = load_yawn(yawn_weights)
+    print(f"모델 {weights}, 후처리 {post.label()}, 하품 전용 {yawn_weights if yawn_predictor else '없음(4클래스 판정)'}", flush=True)
+    judge = LiveJudge(predictor, post, yawn_predictor)
+    rule, mouth_watch, yawn_tracker = LiveRule(judge.events if judge.final else None), MouthClosedWatch(), YawnTracker()
     extractor = LandmarkExtractor()
     beeper = Beeper() if sound and show else None
     stamps: list[float] = []
@@ -291,7 +340,7 @@ def run(source: str, weights: Path, show: bool, sound: bool, max_seconds: float 
             stamps = stamps[-60:]
             rate = (len(stamps) - 1) / (stamps[-1] - stamps[0]) if len(stamps) > 1 and stamps[-1] > stamps[0] else 0.0
             if beeper:
-                beeper.set(judge.stage == DROWSY or judge.unknown_watch.active)
+                beeper.set(alarm_stage(judge, rule) == DROWSY or judge.unknown_watch.active)
             if show:
                 draw(frame, judge, rule, ear, mar, rate)
                 cv2.imshow(WINDOW_NAME, frame)
@@ -330,6 +379,7 @@ def main() -> None:
     parser.add_argument("--camera", default="0", help="웹캠 번호 (DirectShow)")
     parser.add_argument("--input", help="웹캠 대신 영상 파일. 파일 판정과 같은지 확인할 때 쓴다")
     parser.add_argument("--weights", type=Path, default=DEFAULT_WEIGHTS)
+    parser.add_argument("--yawn-weights", type=Path, default=config.YAWN_WEIGHTS, help="하품 전용 모델 가중치. 파일이 없으면 4클래스 판정만 쓴다")
     parser.add_argument("--no-window", action="store_true", help="화면 없이 처리한다")
     parser.add_argument("--mute", action="store_true", help="경고음을 끈다")
     parser.add_argument("--max-seconds", type=float, help="입력 시각으로 이 시간까지만 처리한다")
@@ -342,7 +392,7 @@ def main() -> None:
         print(f"Test2 녹화: {result['saved']} ({result['saved_frames']}프레임, {result['saved_frames'] / config.RECORD_FPS:.1f}초). 판정 결과는 만들지 않았다")
         return
     record = record_path("webcam") if args.record == "webcam" else None
-    result = run(source, args.weights, not args.no_window, not args.mute, args.max_seconds, record)
+    result = run(source, args.weights, not args.no_window, not args.mute, args.max_seconds, record, args.yawn_weights)
     if record:
         print(f"Val2 녹화: {record}")
     print(f"프레임 {result['frames']}개, {result['seconds']:.1f}초, 평균 처리 {result['fps']:.1f} FPS, "

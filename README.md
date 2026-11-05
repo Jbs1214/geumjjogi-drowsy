@@ -114,6 +114,7 @@ python -m sequence_model.build_windows --export data/windows_session   # 기획�
 
 # 5. 1D-CNN·LSTM 학습 (GPU, 시드 3개) → runs/<tag>/
 python -m sequence_model.train --tag v7 --windows data/windows_session
+python -m sequence_model.train_yawn --tag yawn1   # 하품 전용 모델
 
 # 6. 평가: Val 선택 → 후처리 선택 → 최종 선택 → 비교표 (--with-webcam: Val2 웹캠 녹화 포함)
 python -m eval.evaluate val --tag v7 --with-webcam
@@ -162,6 +163,18 @@ python -m unittest discover -t . -s tests
 - Test2 최종 판정은 아직 하지 않았다.
 - 테스트 코드: `tests/test_v3.py` (`python -m unittest discover -t . -s tests`)
 
+## 😮 하품 전용 모델 비교 기준
+
+눈 감김과 고개 숙임은 규칙에 맡기고 하품만 모델이 맡는 구성을 시험하는 기준이다. 결과를 보기 전(11.05)에 정했다.
+
+- **모델:** `yawn1`. `sig3`와 같은 창에 정답만 하품 여부로 바꾼 이진 1D-CNN·LSTM, 시드 42·43·44. 눈 감김과 겹친 창도 하품이다. 최고 epoch는 모든 출처 val의 하품 F1로 고른다.
+- **비교 상대:** MAR 규칙, `sig4` 4클래스 softmax의 하품 출력.
+- **채점:** 하품 사건 단위. 검출이 하품 시작 뒤부터 끝 + 인정 시간 안에 겹치면 잡은 것이고, 어떤 하품과도 겹치지 않으면 오탐이다. 세 방법에 같은 인정 시간(1초, 3초)을 쓴다. 주 지표는 1초다.
+- **기준값:** 모델 하품 확률 0.6(주), 0.8(참고). 0.4초보다 짧은 모델 검출은 지운다.
+- **데이터:** val 9클립, NITYMED 맨입 9건, DMD 맨입 8건, DMD 손 가림 7건. Test는 읽지 않는다.
+- **판정:** 맨입 재현율이 규칙보다 낮지 않고 손 가림 재현율이 규칙보다 높으면 "규칙보다 낫다"로 본다. 하품 전용은 4클래스보다 손 가림 재현율이 높고 맨입 재현율과 오탐이 나빠지지 않을 때 채택한다. 차이는 시드 표준편차보다 클 때만 본다.
+- **한계:** 손 가림이 운전자 2명, 7건뿐이라 방향만 본다.
+
 ## 🧪 실험 기록
 
 임계값, 좌표 번호, 시간창, 판정 주기, 라벨 변환 규칙을 바꾸면 여기에 남긴다.
@@ -183,6 +196,8 @@ python -m unittest discover -t . -s tests
 | 11.04 | v8 1D-CNN: 김민영 창 묶음 `20261103_84e7bf4`(NITYMED 41클립, train 2,878·val 865 창, `norm.npz`), 세션 기준 정규화·DMD·AI Hub 없음. 창 제외는 끝 프레임 불확실·미검출, 불확실+미검출 30% 이상(임시 기준) | 기술서 v3 4.2: LSTM과 같은 창·분할·정규화 | Val macro F1 0.672 / 0.709 / 0.690(시드 42·43·44). 고개숙임은 train 16창이라 F1 0.45~0.52. 사건 평가는 김민영 평가 방식을 받은 뒤 | 육주영 |
 | 11.05 | 고개 숙임 기준을 `PITCH_DOWN` 15도에서 정면 pitch 대비 17.5도로 변경. 정면 pitch는 세션 시작 60초의 두 눈 EAR 0.2 이상 프레임 pitch 중앙값이고, 아직 없으면 절대 25도(`rule_based/head.py` `HeadDown`, 기술서 3.3) | 정면 pitch가 카메라마다 달라 절대 기준이 맞지 않음 | val 실시간 규칙 주의 재현율·시간당 오경보: NITYMED 0.595/56 → 0.595/48, DMD A 0.815/19.6 변화 없음, B 0.533/6.5 변화 없음. NITYMED 숙임 프레임 검출 val 0.632 → 0.589, train 0.438 → 0.365, 그 외 프레임 오탐 val 0.0057 → 0.0053, train 0.0150 → 0.0094 | 장범수 |
 | 11.05 | DMD 변환을 `dataset/dmd_convert.py`로 분리(기술서 5.4). `convert_labels.py`의 옛 규칙(close만, 손 하품=불확실, `reviewed`)과 `--with-dmd` 제거 | 코드가 기술서·라벨 `rules`와 달랐다 | 기존 8클립 재생성: 5클립 동일, 3클립은 `rules`의 사람 수동 수정 자리만 다름. gC_14 재추출 EAR 차이 최대 0.0013 | 장범수 |
+| 11.05 | `yawn1`: 하품 전용 이진 1D-CNN·LSTM, `eval/yawn_compare.py`로 MAR 규칙·`sig4` 하품 출력과 사건 단위 비교 | 눈 감김은 규칙, 하품만 모델이 맡는 구성 시험 | README 기준 충족(인정 1초, 기준 0.6, 1D-CNN). 재현율 NITYMED 맨입 0.85 대 규칙 0.89(시드 표준편차 0.06 안), DMD 맨입 1.00 대 0.88, DMD 손 가림 0.52 대 0.00, 4클래스 손 가림 0.33. 오탐 NITYMED 16 대 16, DMD 6.5 대 0회/시간(시드 표준편차 11.3). 기준 0.8 참고값: 손 가림 0.48, DMD 오탐 0. val 기준, 손 가림 7건·운전자 2명 | 장범수 |
+| 11.05 | 최종 구성 실시간 연결: 하품은 하품 전용 모델(켜짐 0.6, 0.4초 이상), 눈 감김 경고는 규칙과 타이머, 최종 단계는 눈 감김 단계와 하품 알림 중 높은 쪽(`demo/webcam.py`, `demo/streamlit_app.py`). 하품 알림에 끊김 1.0초 병합과 길이 상한 7초 추가. `windows.npz`에 `yawn` 정답 추가 | 기술서 0장·3.2·4.1 반영 | `data/windows_sig3` 11,944창 정답 일치. `eval.yawn_compare`로 `yawn1` 수치 재현(인정 1초, 1D-CNN 0.6: 손 가림 0.52, 맨입 NITYMED 0.85·DMD 1.00, 오탐 16·6.5). 재학습 시드 42 val 하품 F1 0.742(`yawn1` 0.732). 기존 `windows_sig3`에는 `yawn`이 없어 재학습 전 `build_windows`를 다시 돌려야 함 | 장범수 |
 
 ### 팀 코드와 다른 점 (PR에서 정할 것)
 

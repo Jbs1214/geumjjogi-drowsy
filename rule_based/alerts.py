@@ -49,22 +49,28 @@ def mouth_closed_seconds(t: np.ndarray, mar: np.ndarray) -> np.ndarray:
 
 
 class YawnRepeat:
-    """하품 1회 = 모델 하품 판정이 YAWN_MIN_SEC 이상 이어진 것. 최근 5분에 3회면 하품 주의를 낸다."""
+    """하품 1회 = 하품 판정이 min_sec 이상 이어진 것. 최근 5분에 3회면 하품 주의를 낸다 (기술서 3.2).
+    끊김이 YAWN_MERGE_SEC 이하면 이어서 한 번으로 세되, 시작부터 YAWN_MAX_SEC가 지난 하품에는 잇지 않는다."""
 
-    def __init__(self) -> None:
+    def __init__(self, min_sec: float = config.YAWN_MIN_SEC) -> None:
+        self._min_sec = min_sec
         self._since: float | None = None
+        self._last = 0.0
+        self._on = False
         self._counted = False
         self.times: list[float] = []
         self.alerts: list[float] = []
 
     def update(self, t: float, yawning: bool) -> bool:
         """프레임 하나 → 이 프레임에서 하품 주의가 새로 났는지."""
+        was_on, self._on = self._on, yawning
         if not yawning:
-            self._since, self._counted = None, False
             return False
-        if self._since is None:
-            self._since = t
-        if self._counted or t - self._since < config.YAWN_MIN_SEC - 1e-9:
+        joined = self._since is not None and t - self._last <= config.YAWN_MERGE_SEC + 1e-9 and t - self._since <= config.YAWN_MAX_SEC + 1e-9
+        if not was_on and not joined:
+            self._since, self._counted = t, False
+        self._last = t
+        if self._counted or t - self._since < self._min_sec - 1e-9:
             return False
         self._counted = True
         self.times.append(self._since)

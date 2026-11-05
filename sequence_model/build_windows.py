@@ -1,5 +1,5 @@
 # 라벨 JSON과 특징 → 15 FPS 프레임별 y와 3초 창 정답 (기획서 6·7·8번). 정답은 여기서만 계산한다.
-#   data/windows/windows.npz  X (창, 45, 11) 정규화 전 값, y, 창 정보는 windows.csv
+#   data/windows/windows.npz  X (창, 45, 11) 정규화 전 값, y, yawn(하품 전용 모델 정답), 창 정보는 windows.csv
 #   data/windows/skipped.csv  클립별 창 수와 뺀 이유(불확실, 미검출)
 #   data/norm.json            train 창 검출 프레임의 특징별 평균·표준편차
 #
@@ -111,6 +111,19 @@ def clip_windows(df: pd.DataFrame, label: dict, relative: bool = False) -> tuple
     return (np.stack(keep_X) if keep_X else empty), np.array(keep_y, dtype=int), np.array(keep_t), counts
 
 
+def clip_yawn(df: pd.DataFrame, label: dict, ends: np.ndarray) -> np.ndarray:
+    """clip_windows가 돌려준 창 끝 시각 → 하품 전용 모델 정답 (N,). 창의 YAWN_RATIO 이상이 하품이면 참이고 눈 감김과 겹쳐도 참이다."""
+    fps = float(label["fps"])
+    n = min(len(df), int(label["frames"]))
+    yawn = channel_masks(label, n, fps)["yawn"]
+    _, index = resample_index(df["t"].to_numpy()[:n])
+    out = np.zeros(len(ends), dtype=bool)
+    for row, end_sec in enumerate(ends):
+        end = int(round(end_sec * config.FPS)) - 1
+        out[row] = yawn[index[end - config.WINDOW_FRAMES + 1:end + 1]].mean() >= config.YAWN_RATIO
+    return out
+
+
 def fit_norm(X: np.ndarray) -> dict:
     """train 창 → 특징별 평균·표준편차. 검출 프레임만 쓰고 face는 0, 1로 둔다 (기획서 8번)."""
     frames = X.reshape(-1, X.shape[-1])
@@ -182,23 +195,24 @@ def main() -> None:
     split = pd.read_csv(config.SPLIT, encoding="utf-8-sig")
     if args.sources:
         split = split[split["source"].isin(args.sources)]
-    Xs, ys, rows, skipped = [], [], [], []
+    Xs, ys, yawns, rows, skipped = [], [], [], [], []
     for row in split.itertuples(index=False):
         label = json.loads((config.LABEL_DIR / f"{row.clip}.json").read_text(encoding="utf-8"))
         df = pd.read_parquet(FEATURE_SOURCE[row.source] / f"{row.clip}.parquet")
         X, y, ends, counts = clip_windows(df, label, args.relative)
         Xs.append(X)
         ys.append(y)
+        yawns.append(clip_yawn(df, label, ends))
         rows += [{"clip": row.clip, "source": row.source, "driver_id": row.driver_id, "split": row.split, "end_sec": round(float(t), 3), "label": int(v)}
                  for t, v in zip(ends, y)]
         skipped.append({"clip": row.clip, "source": row.source, "split": row.split, **counts, "남은 창": len(y)})
     info = pd.DataFrame(rows)
-    X, y = np.concatenate(Xs), np.concatenate(ys)
+    X, y, yawn = np.concatenate(Xs), np.concatenate(ys), np.concatenate(yawns)
     keep = limit_aihub(info)
-    X, y, info = X[keep], y[keep], info[keep].reset_index(drop=True)
+    X, y, yawn, info = X[keep], y[keep], yawn[keep], info[keep].reset_index(drop=True)
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(out_dir / "windows.npz", X=X, y=y)
+    np.savez_compressed(out_dir / "windows.npz", X=X, y=y, yawn=yawn)
     info.to_csv(out_dir / "windows.csv", index=False, encoding="utf-8-sig")
     table = pd.DataFrame(skipped)
     table.to_csv(out_dir / "skipped.csv", index=False, encoding="utf-8-sig")

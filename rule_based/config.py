@@ -9,6 +9,8 @@ UNKNOWN_ALERT_SEC = 3.0 # 판정 불가가 이 시간(초) 이어지면 확인 �
 YAWN_REPEAT = 3         # 하품이 YAWN_REPEAT_WINDOW_SEC 안에 이 횟수면 하품 주의. 수정 기획서 F 4·5-3
 YAWN_REPEAT_WINDOW_SEC = 300.0
 YAWN_COOLDOWN_SEC = 120.0   # 하품 주의 뒤 이 시간 동안 다시 알리지 않는다
+YAWN_MERGE_SEC = 1.0        # 하품 판정 끊김이 이 시간(초) 이하이면 한 번으로 센다. 기술서 3.2
+YAWN_MAX_SEC = 7.0          # 끊김을 이어 붙인 하품의 길이 상한(초). 하품 알림 계산에만 쓴다. 기술서 3.2
 YAWN_DISPLAY_CLOSED_SEC = 0.5   # 입을 다문 지 이만큼 지나면 화면에서 하품을 끝낸다 (창 정답 50%로 생기는 지연을 화면에서 줄임)
 
 MAR_YAWN = 0.3          # mar가 이보다 크면 입 벌림. 검증: 하품 최고 0.47~0.50, 입 다묾 최고 0.06 (yawn 영상)

@@ -34,12 +34,13 @@ class LiveSession:
         from landmarks.extract import LandmarkExtractor
         from sequence_model.models import Predictor
         from sequence_model.postprocess import for_weights
-        from demo.webcam import Beeper, LiveJudge, LiveRule
+        from demo.webcam import Beeper, LiveJudge, LiveRule, load_yawn
 
         predictor = Predictor(weights)
         self.post = for_weights(weights, predictor.name)
         self.weights = weights
-        self.judge, self.rule = LiveJudge(predictor, self.post), LiveRule()
+        self.judge = LiveJudge(predictor, self.post, load_yawn(config.YAWN_WEIGHTS))
+        self.rule = LiveRule(self.judge.events if self.judge.final else None)
         self.mouth, self.yawn = MouthClosedWatch(), YawnTracker()
         self.extractor = LandmarkExtractor()
         self.beeper = Beeper() if sound else None
@@ -48,7 +49,7 @@ class LiveSession:
         self.began: float | None = None
 
     def process(self, frame: np.ndarray) -> None:
-        from demo.webcam import draw, frame_vector
+        from demo.webcam import alarm_stage, draw, frame_vector
 
         now = time.perf_counter()
         self.began = self.began or now
@@ -64,14 +65,16 @@ class LiveSession:
             rate = (len(self.stamps) - 1) / (self.stamps[-1] - self.stamps[0]) if len(self.stamps) > 1 else 0.0
             draw(frame, self.judge, self.rule, value["ear"], value["mar"], rate)
             if self.beeper:
-                self.beeper.set(self.judge.stage == DROWSY or self.judge.unknown_watch.active)
+                self.beeper.set(alarm_stage(self.judge, self.rule) == DROWSY or self.judge.unknown_watch.active)
 
     def snapshot(self) -> dict:
+        from demo.webcam import alarm_stage
+
         with self.lock:
             j = self.judge
             rate = (len(self.stamps) - 1) / (self.stamps[-1] - self.stamps[0]) if len(self.stamps) > 1 else 0.0
-            return {"state": config.CLASSES[j.shown] if j.shown >= 0 else "준비 중", "stage": STAGE_NAMES[j.stage], "rule_stage": STAGE_NAMES[self.rule.stage],
-                    "closed_sec": j.closed_sec, "rate": rate, "events": list(j.events), "history": list(j.history),
+            return {"state": config.CLASSES[j.shown] if j.shown >= 0 else "준비 중", "stage": STAGE_NAMES[alarm_stage(j, self.rule)], "rule_stage": STAGE_NAMES[self.rule.stage],
+                    "closed_sec": self.rule.closed_sec if j.final else j.closed_sec, "rate": rate, "events": list(j.events), "history": list(j.history),
                     "seconds": j.history[-1][0] - j.history[0][0] if j.history else 0.0}
 
     def finish(self) -> str:

@@ -378,6 +378,98 @@ class HeadDownTest(unittest.TestCase):
         self.assertEqual(is_down(t, np.array([-3.0, -3.0, 15.0, 14.0]), ear, ear).tolist(), [False, False, True, False])
 
 
+class YawnModelTest(unittest.TestCase):
+    class Normal:
+        relative = False
+
+        def predict(self, windows):
+            out = np.zeros((len(windows), config.N_CLASSES))
+            out[:, config.NORMAL] = 1.0
+            return out
+
+    class EndJaw:
+        """창 끝 jaw_open이 하품 확률이다."""
+        relative = False
+        outputs = 1
+
+        def predict(self, windows):
+            return windows[:, -1, config.FEATURES.index("jaw_open")][:, None].astype(float)
+
+    @staticmethod
+    def stream(judge, df):
+        from sequence_model.build_windows import feature_matrix
+        shown = []
+        for t, vector in zip(df["t"], feature_matrix(df)):
+            judge.update(float(t), vector, mouth_closed=9.0)     # 입은 다문 채(손 가림)로 넣는다
+            shown.append(judge.shown)
+        return shown
+
+    def test_targets_keep_yawn_over_eye_closure(self):
+        from sequence_model.build_windows import clip_yawn
+        df = features(150, fps=15.0)
+        label = {"fps": 15.0, "frames": 150, "eye_closed": [[0.0, 10.0]], "uncertain": [], "head_down": [],
+                 "yawn": [{"start": 2.0, "end": 8.0, "hand": False}]}
+        self.assertEqual(clip_yawn(df, label, np.array([3.0, 5.0, 10.0])).tolist(), [False, True, False])
+
+    def test_repeat_merges_gaps_and_caps_length(self):
+        from rule_based.alerts import YawnRepeat
+
+        def count(*spans):
+            rep = YawnRepeat(0.0)
+            for t in np.arange(0.2, spans[-1][1] + 2, 0.2).round(1):
+                rep.update(float(t), any(start <= t <= end for start, end in spans))
+            return len(rep.times)
+        self.assertEqual(count((1.0, 2.0), (3.0, 4.0)), 1)        # 끊김 1초는 한 번
+        self.assertEqual(count((1.0, 2.0), (3.4, 4.0)), 2)        # 끊김 1.4초는 두 번
+        self.assertEqual(count((1.0, 7.6), (8.4, 9.0)), 2)        # 7초를 넘겨서는 잇지 않는다
+        self.assertEqual(count((1.0, 12.0)), 1)                   # 끊기지 않은 긴 하품은 한 번
+
+    def test_final_setup_uses_yawn_model_and_rule_stage(self):
+        from demo.webcam import LiveJudge, LiveRule, alarm_stage
+        from rule_based.alarm import NORMAL, WARN
+        df = features(300, fps=15.0)
+        df["jaw_open"] = 0.0
+        df.loc[100:129, "jaw_open"] = 1.0       # 2초 하품
+        df.loc[200:203, "jaw_open"] = 1.0       # 0.27초는 하품이 아니다
+        judge = LiveJudge(self.Normal(), yawn_predictor=self.EndJaw())
+        rule = LiveRule(judge.events)
+        self.assertEqual(alarm_stage(judge, rule), NORMAL)
+        shown = self.stream(judge, df)
+        self.assertEqual(shown[125], config.YAWN)               # 입을 다문 값이어도 모델이 하품이면 하품이다
+        self.assertNotIn(config.YAWN, shown[190:])
+        self.assertEqual(len(judge.yawn_repeat.times), 1)
+        rule.stage = WARN
+        self.assertEqual(alarm_stage(judge, rule), WARN)
+        judge.yawn_repeat.alerts.append(judge.history[-1][0])
+        rule.stage = NORMAL
+        self.assertEqual(alarm_stage(judge, rule), WARN)        # 눈 감김 단계와 하품 알림 중 높은 쪽
+
+    def test_final_rule_events_replace_model_events(self):
+        from demo.webcam import LiveJudge, LiveRule
+        judge = LiveJudge(self.Normal(), yawn_predictor=self.EndJaw())
+        rule = LiveRule(judge.events)
+        for i in range(150):
+            rule.update(i / 25, True, 0.3)
+        for i in range(150, 240):
+            rule.update(i / 25, True, 0.1)
+        self.assertEqual([e.kind for e in judge.events], ["주의", "졸음"])
+
+    def test_live_matches_file_detection(self):
+        from demo.webcam import LiveJudge
+        from eval.evaluate import model_probs
+        from eval.yawn_compare import detections
+        df = features(400, fps=25.0)
+        df["jaw_open"] = 0.0
+        df.loc[100:160, "jaw_open"] = 1.0
+        df.loc[250:340, "jaw_open"] = 1.0
+        grid, probs, judged = model_probs(df, self.EndJaw())
+        found = detections(grid, (probs[:, 0] >= config.YAWN_ENTER) & judged, config.YAWN_MODEL_MIN_SEC)
+        judge = LiveJudge(self.Normal(), yawn_predictor=self.EndJaw())
+        self.stream(judge, df)
+        self.assertEqual(len(judge.yawn_repeat.times), len(found))
+        self.assertTrue(np.allclose(judge.yawn_repeat.times, [a + config.YAWN_MODEL_MIN_SEC for a, _ in found], atol=0.21))
+
+
 class DmdTest(unittest.TestCase):
     @staticmethod
     def openlabel():

@@ -51,12 +51,12 @@ def ear48_closed(df: pd.DataFrame, fps: float) -> np.ndarray:
 
 
 def model_probs(df: pd.DataFrame, predictor: Predictor) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """특징 표 → (15 FPS 판정 시각, 프레임별 클래스 확률 (N, 4), 판정 여부).
+    """특징 표 → (15 FPS 판정 시각, 프레임별 출력별 확률 (N, 출력 수), 판정 여부).
     판정은 0.2초(격자 JUDGE_EVERY칸)마다 하고 사이 프레임은 직전 판정을 유지한다(수정 기획서 F 5-3).
     첫 창이 차기 전, 창의 미검출이 30%를 넘을 때, 창 끝 프레임에서 얼굴이 안 보일 때는 판정 불가다(5-1)."""
     grid, index = resample_index(df["t"].to_numpy())
     X = feature_matrix(df, getattr(predictor, "relative", False))[index]
-    probs = np.zeros((len(grid), config.N_CLASSES))
+    probs = np.zeros((len(grid), getattr(predictor, "outputs", config.N_CLASSES)))
     judged = np.zeros(len(grid), dtype=bool)
     first = config.WINDOW_FRAMES - 1
     if len(X) < config.WINDOW_FRAMES:

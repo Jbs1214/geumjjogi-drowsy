@@ -48,6 +48,7 @@ SPLIT = DATA / "split.csv"              # 운전자 단위 분할. 모든 실험
 NORM = DATA / "norm.json"               # train 창 특징의 평균·표준편차
 WINDOW_DIR = DATA / "windows"           # build_windows.py 결과
 RUNS = ROOT / "runs"
+YAWN_WEIGHTS = RUNS / "yawn1" / "cnn1d_v01.pt"   # 최종 구성의 하품 전용 모델 (기술서 4.1)
 
 # 얼굴 검출 (landmarks/extract.py). main·김민영 특징 CSV(v8 학습 창)와 같은 값이다. 다르면 얼굴을 잡는 프레임이 학습 때와 달라진다
 MIN_FACE_CONFIDENCE = 0.3
@@ -71,6 +72,9 @@ N_CLASSES = len(CLASSES)
 # 겹침 우선순위 (기획서 4번): 불확실 > 눈감김 > 고개숙임 > 하품 > 정상. 앞의 채널이 이긴다
 PRIORITY = (("uncertain", UNCERTAIN), ("eye_closed", CLOSED), ("head_down", HEAD), ("yawn", YAWN))
 YAWN_STEP = 0.5                         # 하품 경계 단위(초, 기획서 라벨 정밀도)
+YAWN_SELECT_THRESHOLD = 0.5             # 하품 전용 모델의 최고 epoch를 고를 때 쓰는 창 F1 기준 확률
+YAWN_ENTER = 0.6                        # 하품 전용 모델 켜짐 기준. README "하품 전용 모델 비교 기준"
+YAWN_MODEL_MIN_SEC = 0.4                # 이보다 짧은 하품 전용 모델 검출은 하품으로 보지 않는다
 
 # 입력 특징 11개 (기획서 5번, 사람이 11개로 확정)
 FACE_COLUMN = "face"
