@@ -59,6 +59,7 @@
 | `Pillow` | 13.0.0 | 데모 화면에 한글 글자 그리기 |
 | `torch` (CUDA 11.8용) | 2.7.1+cu118 | 1D-CNN·LSTM 학습 |
 | `streamlit`, `streamlit-webrtc` | 1.66.1, 0.79.0 | 실시간 데모 화면 |
+| `scikit-learn` | 1.9.1 | 창 요약 특징 기준선 |
 | `onnx`, `onnxruntime` | [미정] | (선택) 추론 속도 비교 |
 
 경고음은 Windows 기본 `winsound`로 낸다. 목록에 없는 라이브러리는 팀에 먼저 공유하고 추가한다.
@@ -115,6 +116,7 @@ python -m sequence_model.build_windows --export data/windows_session   # 기획�
 # 5. 1D-CNN·LSTM 학습 (GPU, 시드 3개) → runs/<tag>/
 python -m sequence_model.train --tag v7 --windows data/windows_session
 python -m sequence_model.train_yawn --tag yawn1   # 하품 전용 모델
+python -m sequence_model.baseline --tag base1      # 창 요약 특징 + scikit-learn 기준선
 
 # 6. 평가: Val 선택 → 후처리 선택 → 최종 선택 → 비교표 (--with-webcam: Val2 웹캠 녹화 포함)
 python -m eval.evaluate val --tag v7 --with-webcam
@@ -199,6 +201,7 @@ python -m unittest discover -t . -s tests
 | 11.05 | `yawn1`: 하품 전용 이진 1D-CNN·LSTM, `eval/yawn_compare.py`로 MAR 규칙·`sig4` 하품 출력과 사건 단위 비교 | 눈 감김은 규칙, 하품만 모델이 맡는 구성 시험 | README 기준 충족(인정 1초, 기준 0.6, 1D-CNN). 재현율 NITYMED 맨입 0.85 대 규칙 0.89(시드 표준편차 0.06 안), DMD 맨입 1.00 대 0.88, DMD 손 가림 0.52 대 0.00, 4클래스 손 가림 0.33. 오탐 NITYMED 16 대 16, DMD 6.5 대 0회/시간(시드 표준편차 11.3). 기준 0.8 참고값: 손 가림 0.48, DMD 오탐 0. val 기준, 손 가림 7건·운전자 2명 | 장범수 |
 | 11.05 | 최종 구성 실시간 연결: 하품은 하품 전용 모델(켜짐 0.6, 0.4초 이상), 눈 감김 경고는 규칙과 타이머, 최종 단계는 눈 감김 단계와 하품 알림 중 높은 쪽(`demo/webcam.py`, `demo/streamlit_app.py`). 하품 알림에 끊김 1.0초 병합과 길이 상한 7초 추가. `windows.npz`에 `yawn` 정답 추가 | 기술서 0장·3.2·4.1 반영 | `data/windows_sig3` 11,944창 정답 일치. `eval.yawn_compare`로 `yawn1` 수치 재현(인정 1초, 1D-CNN 0.6: 손 가림 0.52, 맨입 NITYMED 0.85·DMD 1.00, 오탐 16·6.5). 재학습 시드 42 val 하품 F1 0.742(`yawn1` 0.732). 기존 `windows_sig3`에는 `yawn`이 없어 재학습 전 `build_windows`를 다시 돌려야 함 | 장범수 |
 | 11.05 | 영상 데모(`demo/demo_video.py`)와 Streamlit 결과 그래프를 최종 구성으로 연결, 마스크 착용 스위치 추가(`--mask`, Streamlit 사이드바). 자동 마스크 감지는 넣지 않음 | 기술서 3.2·8장 반영. 마스크 영상이 없어 자동 감지를 검증할 수 없음 | 파일과 실시간의 하품 판정이 같음을 테스트로 확인. P1043075 영상으로 데모 생성 확인, 이 클립은 하품 검출이 없어 마스크 동작은 테스트로만 확인 | 장범수 |
+| 11.05 | `base1`: 창 요약 특징(평균·표준편차·최솟값·최댓값 44개) + 로지스틱 회귀·랜덤 포레스트 기준선(`sequence_model/baseline.py`, `origin/main`의 코드를 이 구조로 옮김). 데이터 `windows_sig3`, `scikit-learn` 1.9.1 추가 | 기술서 4.2 기준선 | val 창 macro F1(전체/NITYMED/DMD): 로지스틱 0.447/0.472/0.390, 랜덤 포레스트 0.417/0.434/0.533, `sig4` 1D-CNN 0.690/0.700/0.601, LSTM 0.607/0.637/0.566. 두 신경망 모두 기준선보다 높음 | 장범수 |
 
 ### 팀 코드와 다른 점 (PR에서 정할 것)
 

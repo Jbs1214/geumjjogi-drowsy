@@ -499,6 +499,21 @@ class MaskAndFileTest(unittest.TestCase):
         self.assertTrue(yawn_alerts(times, yawning).any())      # 세 번째 하품에서 하품 주의
 
 
+class BaselineTest(unittest.TestCase):
+    def test_summary_and_missing_class(self):
+        from sequence_model.baseline import fit_baseline, predict_proba, summarize
+        rng = np.random.default_rng(0)
+        X = rng.normal(size=(40, config.WINDOW_FRAMES, len(config.FEATURES))).astype(np.float32)
+        y = np.array([config.NORMAL, config.YAWN] * 20)
+        X[y == config.YAWN] += 2.0
+        self.assertEqual(summarize(X).shape, (40, len(config.FEATURES) * 4))
+        for name in ("logreg", "forest"):
+            proba = predict_proba(fit_baseline(name, X, y), X)
+            self.assertEqual(proba.shape, (40, config.N_CLASSES))
+            self.assertTrue((proba[:, config.CLOSED] == 0).all())       # train에 없던 클래스
+            self.assertTrue((proba.argmax(axis=1) == y).all())
+
+
 class DmdTest(unittest.TestCase):
     @staticmethod
     def openlabel():
