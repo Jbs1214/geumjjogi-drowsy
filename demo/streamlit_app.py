@@ -56,10 +56,10 @@ class LiveSession:
         raw = self.extractor.process(frame, t)
         vector = frame_vector(raw)
         found = bool(vector[config.FEATURES.index(config.FACE_COLUMN)] > 0.5)
-        value = {name: float(vector[config.FEATURES.index(name)]) if found else np.nan for name in ("ear", "mar", "pitch")}
+        value = {name: float(vector[config.FEATURES.index(name)]) if found else np.nan for name in ("ear", "ear_l", "ear_r", "mar", "pitch")}
         with self.lock:
             self.judge.update(t, vector, self.mouth.update(t, value["mar"]), self.yawn.update(t, value["mar"]))
-            self.rule.update(t, found, value["ear"], value["pitch"])
+            self.rule.update(t, found, value["ear"], value["pitch"], value["ear_l"], value["ear_r"])
             self.stamps = (self.stamps + [time.perf_counter()])[-60:]
             rate = (len(self.stamps) - 1) / (self.stamps[-1] - self.stamps[0]) if len(self.stamps) > 1 else 0.0
             draw(frame, self.judge, self.rule, value["ear"], value["mar"], rate)

@@ -134,7 +134,7 @@ class LiveRule:
         self.ready, self.stage = False, NORMAL
         self.history: list[tuple[float, int]] = []
 
-    def update(self, t: float, found: bool, ear: float, pitch: float = float("nan")) -> None:
+    def update(self, t: float, found: bool, ear: float, pitch: float = float("nan"), ear_l: float = float("nan"), ear_r: float = float("nan")) -> None:
         """판정 불가(얼굴이 안 보임)와 고개 숙임(pitch 규칙)은 직전 눈 감김이 0.5초 이상이면 이어서 센다 (최종 기획서 5-1·5-3)."""
         if self._t0 is None:
             self._t0 = t
@@ -144,7 +144,7 @@ class LiveRule:
             self._baseline, self._baseline_t = float(np.quantile(self._ears, BASELINE_EAR_QUANTILE)), t
         self.ready = t - self._t0 >= RULE_MIN_SEC
         closed = self.ready and found and not np.isnan(ear) and ear < EAR_RATIO * self._baseline
-        head_down = self._head.update(t, pitch, ear)
+        head_down = self._head.update(t, pitch, ear_l, ear_r)
         self.stage = self._timer.update(t, closed, unknown=(not found) or head_down)
         self.history.append((t, self.stage))
 
@@ -285,7 +285,7 @@ def run(source: str, weights: Path, show: bool, sound: bool, max_seconds: float 
             mouth_closed = mouth_watch.update(t, mar)
             pitch = float(vector[config.FEATURES.index("pitch")]) if found else np.nan
             judge.update(t, vector, mouth_closed, yawn_tracker.update(t, mar))
-            rule.update(t, found, ear, pitch)
+            rule.update(t, found, ear, pitch, *(float(vector[config.FEATURES.index(name)]) for name in ("ear_l", "ear_r")))
             frames += 1
             stamps.append(time.perf_counter())
             stamps = stamps[-60:]
