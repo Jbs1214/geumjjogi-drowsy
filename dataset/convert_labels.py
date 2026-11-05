@@ -1,7 +1,7 @@
 # 사람 라벨과 AI Hub 자동 라벨 → 클립당 라벨 JSON 1개 (기획서 9번 양식) + 분할 파일 data/split.csv.
 #   NITYMED (label_status reviewed): 재검수 segments, eye_check_segments.csv, 사람이 표시한 고개숙임(data/head_down)
 #   AI Hub 089 (label_status auto): 2차 자동 라벨의 정상·하품만. 합쳐진 눈감김·고개숙임은 불확실이다
-# 라벨을 새로 판단하지 않고 사람이 정한 규칙대로 옮긴다. 프레임별 y와 창 정답은 build_windows.py가 계산한다.
+# 라벨을 새로 판단하지 않고 사람이 정한 규칙대로 옮긴다. 프레임별 y와 창 정답은 sequence_model/frames.py가 계산한다.
 #
 # 실행: python -m dataset.convert_labels [--skip-aihub]
 
@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 import config
-from sequence_model.build_windows import frame_states
+from sequence_model.frames import frame_states
 from rule_based import config as rule_config
 from rule_based.common import runs
 

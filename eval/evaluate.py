@@ -14,15 +14,15 @@ import numpy as np
 import pandas as pd
 
 import config
-from sequence_model.build_windows import channel_masks, feature_matrix, frame_states, resample_index
+from sequence_model.frames import channel_masks, feature_matrix, frame_states, resample_index
 from eval.metrics import (ALERT_TOLERANCE_SEC, alert_delay, classification_metrics, event_recall, false_alarms_per_hour, match_segments, prf,
                           segments_within)
 from sequence_model.models import Predictor
 from sequence_model.postprocess import CANDIDATES, NONE, Post, bridge, decide, drop_short, shown_yawn
-from rule_based.alarm import DROWSY, WARN, stage_starts, timer_stages
+from sequence_model.postprocess import eye_flags, pitch_baselines, swap_ears, team_sides
+from rule_based.closure_timer import DROWSY, WARN, stage_starts, timer_stages
 from rule_based.common import runs
 from rule_based.eyes import is_closed
-from rule_based.head import is_down
 from rule_based.yawn import yawning
 
 EAR_RATIO = 0.48
@@ -50,12 +50,26 @@ def ear48_closed(df: pd.DataFrame, fps: float) -> np.ndarray:
     return mask
 
 
-def model_probs(df: pd.DataFrame, predictor: Predictor) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def load_predictor(weights, tag: str | None = None) -> Predictor:
+    """가중치 → Predictor. 경로가 없으면(다른 PC에서 학습한 experiments.csv) runs/<tag>/<파일 이름>을 쓴다.
+    team: 팀 좌우 기준(v8~)으로 학습했는지. 입력 특징의 좌우 기준이 다르면 model_probs가 ear_l·ear_r을 바꾼다."""
+    path = Path(weights)
+    if not path.exists() and tag:
+        path = config.RUNS / tag / path.name
+    predictor = Predictor(path)
+    setattr(predictor, "team", team_sides(path))
+    return predictor
+
+
+def model_probs(df: pd.DataFrame, predictor: Predictor, team_input: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """특징 표 → (15 FPS 판정 시각, 프레임별 클래스 확률 (N, 4), 판정 여부).
     판정은 0.2초(격자 JUDGE_EVERY칸)마다 하고 사이 프레임은 직전 판정을 유지한다(수정 기획서 F 5-3).
-    첫 창이 차기 전, 창의 미검출이 30%를 넘을 때, 창 끝 프레임에서 얼굴이 안 보일 때는 판정 불가다(5-1)."""
+    첫 창이 차기 전, 창의 미검출이 30%를 넘을 때, 창 끝 프레임에서 얼굴이 안 보일 때는 판정 불가다(5-1).
+    team_input: df가 팀 좌우 기준 특징(features_v8)인지. 모델의 학습 기준과 다르면 ear_l·ear_r을 바꿔 넣는다."""
     grid, index = resample_index(df["t"].to_numpy())
     X = feature_matrix(df, getattr(predictor, "relative", False))[index]
+    if team_input != getattr(predictor, "team", False):
+        X = swap_ears(X)
     probs = np.zeros((len(grid), config.N_CLASSES))
     judged = np.zeros(len(grid), dtype=bool)
     first = config.WINDOW_FRAMES - 1
@@ -75,12 +89,29 @@ def model_probs(df: pd.DataFrame, predictor: Predictor) -> tuple[np.ndarray, np.
 def rule_timer_inputs(df: pd.DataFrame) -> dict:
     """규칙의 타이머 입력 (최종 기획서 5-1·5-3): 판정 불가 = 그 프레임에서 얼굴이 안 보임, 고개 숙임 = pitch 규칙.
     둘 다 직전 눈 감김이 0.5초 이상이면 이어서 센다. 하품 중 눈 감김도 센다."""
-    return {"unknown": ~df["face_found"].to_numpy(dtype=bool) | is_down(df["pitch"].to_numpy())}
+    return {"unknown": ~df["face_found"].to_numpy(dtype=bool) | pitch_down(df)}
 
 
 def model_timer_unknown(classes: np.ndarray) -> np.ndarray:
     """모델의 타이머 이어받기 대상: 판정 불가(-1)와 고개숙임 클래스 (최종 기획서 5-1·5-3)."""
     return (classes < 0) | (classes == config.HEAD)
+
+
+def frame_eye_flags(df: pd.DataFrame) -> np.ndarray:
+    """원본 프레임마다 (고개 숙임, 한쪽 눈 뜸, 두 눈 감음). 고개 숙임은 정면 기준 상대 pitch(PitchBaseline, 실시간과 같다)."""
+    X = feature_matrix(df)
+    return eye_flags(X, pitch_baselines(df["t"].to_numpy(), X))
+
+
+def pitch_down(df: pd.DataFrame) -> np.ndarray:
+    """원본 프레임 → 고개 숙임 여부 (config.HEAD_PITCH_RELATIVE이면 정면 기준 상대 pitch, 아니면 절대 HEAD_PITCH_DOWN). 미검출은 거짓."""
+    return frame_eye_flags(df)[:, 0]
+
+
+def grid_eye_flags(df: pd.DataFrame) -> np.ndarray:
+    """원본 프레임 → 15 FPS 격자마다 (고개 숙임, 한쪽 눈 뜸, 두 눈 감음). 실시간(LiveJudge)과 같은 eye_flags를 쓴다."""
+    _, index = resample_index(df["t"].to_numpy())
+    return frame_eye_flags(df)[index]
 
 
 def grid_mouth_closed(df: pd.DataFrame) -> np.ndarray:
@@ -97,10 +128,10 @@ def grid_yawning(df: pd.DataFrame) -> np.ndarray:
     return yawning(df["t"].to_numpy(), df["mar"].to_numpy())[index]
 
 
-def model_frames(df: pd.DataFrame, predictor: Predictor, post: Post = NONE) -> tuple[np.ndarray, np.ndarray]:
+def model_frames(df: pd.DataFrame, predictor: Predictor, post: Post = NONE, team_input: bool = False) -> tuple[np.ndarray, np.ndarray]:
     """특징 표 → (15 FPS 판정 시각, 프레임별 클래스). 판정하지 않는 프레임은 -1이다. post는 후처리(기본은 argmax 그대로)."""
-    grid, probs, judged = model_probs(df, predictor)
-    return grid, decide(probs, judged, post)
+    grid, probs, judged = model_probs(df, predictor, team_input)
+    return grid, decide(probs, judged, post, grid_eye_flags(df))
 
 
 def intervals(times: np.ndarray, flags: np.ndarray, step: float) -> list[tuple[float, float]]:
@@ -115,10 +146,17 @@ def wipe(times: np.ndarray, flags: np.ndarray, uncertain: list) -> np.ndarray:
     return out
 
 
+def feature_path(clip: str) -> tuple[Path, bool]:
+    """클립 특징 파일과 팀 좌우 기준 여부. 지금 추출 코드로 뽑은 features_v8(팀 기준)이 있으면 그것을, 없으면 features(이전 기준)를 쓴다."""
+    team = config.FEATURE_V8_DIR / f"{clip}.parquet"
+    return (team, True) if team.exists() else (config.FEATURE_DIR / f"{clip}.parquet", False)
+
+
 def load_clip(clip: str) -> dict:
     """클립 → 특징, 정답 구간(클래스별), 불확실 구간, 3초·1.5초 이상 눈 감김, 평가 시간."""
     label = json.loads((config.LABEL_DIR / f"{clip}.json").read_text(encoding="utf-8"))
-    df = pd.read_parquet(config.FEATURE_DIR / f"{clip}.parquet").iloc[:label["frames"]]
+    path, team = feature_path(clip)
+    df = pd.read_parquet(path).iloc[:label["frames"]]
     fps = float(label["fps"])
     t = np.arange(len(df)) / fps
     states = frame_states(channel_masks(label, len(df), fps))
@@ -127,7 +165,7 @@ def load_clip(clip: str) -> dict:
     closures = merge(truth["눈감김"])
     uncertain = [tuple(s) for s in label["uncertain"]]
     duration = len(df) / fps
-    return {"clip": clip, "df": df, "fps": fps, "truth": truth, "uncertain": uncertain, "span": (config.WINDOW_SEC, duration),
+    return {"clip": clip, "df": df, "team": team, "fps": fps, "truth": truth, "uncertain": uncertain, "span": (config.WINDOW_SEC, duration),
             "events": {sec: [c for c in closures if round(c[1] - c[0], 3) >= sec] for sec in (3.0, 1.5)},
             "hours": (duration - sum(e - s for s, e in uncertain)) / 3600}
 
@@ -202,12 +240,14 @@ def bootstrap_f1(seeds: list[dict], clips: list[dict], target: str = "눈감김"
 
 
 def window_macro_f1(predictor: Predictor, split: str) -> float:
-    """build_windows.py 창으로 낸 창 단위 macro F1 (NITYMED만). 세션 기준 가중치는 세션 기준 창으로 잰다."""
+    """sequence_model/frames.py 창으로 낸 창 단위 macro F1 (NITYMED만). 세션 기준 가중치는 세션 기준 창으로 잰다."""
     folder = config.DATA / "windows_session" if getattr(predictor, "relative", False) else config.WINDOW_DIR
     data = np.load(folder / "windows.npz")
     info = pd.read_csv(folder / "windows.csv", encoding="utf-8-sig")
     keep = ((info["split"] == split) & (info["source"] == "nitymed")).to_numpy()
-    return classification_metrics(data["y"][keep], predictor.predict(data["X"][keep]).argmax(axis=1))["macro_f1"]
+    X = data["X"][keep]          # frames.py 창은 이전 좌우 기준이다
+    X = swap_ears(X) if getattr(predictor, "team", False) else X
+    return classification_metrics(data["y"][keep], predictor.predict(X).argmax(axis=1))["macro_f1"]
 
 
 def selection_clips(with_webcam: bool = False) -> list[dict]:
@@ -215,7 +255,7 @@ def selection_clips(with_webcam: bool = False) -> list[dict]:
     table = pd.read_csv(config.SPLIT, encoding="utf-8-sig")
     clips = [load_clip(c) for c in table[(table["source"] == "nitymed") & (table["split"] == "val")]["clip"]]
     if with_webcam:
-        webcam = [p.stem for p in sorted(config.WEBCAM_DIR.glob("*.mp4")) if (config.LABEL_DIR / f"{p.stem}.json").exists()]
+        webcam = [p.stem for p in sorted(config.WEBCAM_LABEL_DIR.glob("*.json")) if (config.LABEL_DIR / p.name).exists()]
         if not webcam:
             raise SystemExit("Val2 라벨이 없습니다. python -m eval.score_user --set webcam을 먼저 돌려 라벨을 변환하세요")
         clips += [load_clip(c) for c in webcam]
@@ -232,14 +272,15 @@ def score_split(split: str, tag: str, with_webcam: bool = False) -> pd.DataFrame
 
 def model_scores(clips: list[dict], predictor: Predictor, posts) -> dict:
     """모델 하나 → 후처리 설정마다 클립별 채점. 확률은 한 번만 계산한다."""
-    probs = {c["clip"]: model_probs(c["df"], predictor) for c in clips}
+    probs = {c["clip"]: model_probs(c["df"], predictor, c.get("team", False)) for c in clips}
     mouths = {c["clip"]: (grid_mouth_closed(c["df"]), grid_yawning(c["df"])) for c in clips}
+    heads = {c["clip"]: grid_eye_flags(c["df"]) for c in clips}
     out = {}
     for post in posts:
         scores = {}
         for clip in clips:
             times, p, judged = probs[clip["clip"]]
-            classes = decide(p, judged, post)
+            classes = decide(p, judged, post, heads[clip["clip"]])
             flags = {name: classes == value for name, value in TARGETS.items()}
             flags["하품"] = shown_yawn(classes, *mouths[clip["clip"]], post.yawn_mode)     # 하품은 화면과 같은 판정으로 채점
             scores[clip["clip"]] = clip_score(clip, times, flags, 1 / config.FPS, post.grace, post.min_close,
@@ -257,14 +298,14 @@ def score_clips(clips: list[dict], tag: str, window_split: str | None = None, po
     for row in runs_table.itertuples(index=False):
         if models is not None and row.모델 not in models:
             continue
-        predictor = Predictor(Path(row.weights))
+        predictor = load_predictor(row.weights, tag)
         scores = model_scores(clips, predictor, [post])[post]
         window = {"창_macroF1": window_macro_f1(predictor, window_split)} if window_split else {}
         rows.append({**method_row(row.모델, row.seed, scores, clips), **window, "_scores": scores})
     rules = {EYE_RULES[0]: lambda c: {"눈감김": is_closed(c["df"]["ear"].to_numpy())},
              EYE_RULES[1]: lambda c: {"눈감김": ear48_closed(c["df"], c["fps"])},
              YAWN_RULE: lambda c: {"하품": yawning(c["df"]["t"].to_numpy(), c["df"]["mar"].to_numpy())},
-             HEAD_RULE: lambda c: {"고개숙임": is_down(c["df"]["pitch"].to_numpy())}}
+             HEAD_RULE: lambda c: {"고개숙임": pitch_down(c["df"])}}
     for name, make in rules.items():
         scores = {c["clip"]: clip_score(c, c["df"]["t"].to_numpy(), make(c), 1 / c["fps"], **rule_timer_inputs(c["df"])) for c in clips}
         rows.append({**method_row(name, 0, scores, clips), "_scores": scores})
@@ -339,7 +380,7 @@ def tune_post(tag: str, with_webcam: bool = False, base_tag: str = BASE_TAG) -> 
     runs_table = pd.read_csv(base / "experiments.csv", encoding="utf-8-sig")
     rows = []
     for row in runs_table[runs_table["모델"] == chosen].itertuples(index=False):
-        for post, scores in model_scores(clips, Predictor(Path(row.weights)), CANDIDATES).items():
+        for post, scores in model_scores(clips, load_predictor(row.weights, tag), CANDIDATES).items():
             rows.append({"_order": CANDIDATES.index(post), "설정": post.label(), **method_row(chosen, row.seed, scores, clips)})
     seeds = pd.DataFrame(rows)
     summary = seeds.drop(columns=["방법", "시드"]).groupby(["_order", "설정"]).mean().reset_index()
@@ -384,7 +425,7 @@ def tune_field(tag: str, field: str, with_webcam: bool = False) -> None:
     runs_table = pd.read_csv(base / "experiments.csv", encoding="utf-8-sig")
     rows = []
     for row in runs_table[runs_table["모델"] == chosen].itertuples(index=False):
-        for i, (post, scores) in enumerate(model_scores(clips, Predictor(Path(row.weights)), posts).items()):
+        for i, (post, scores) in enumerate(model_scores(clips, load_predictor(row.weights, tag), posts).items()):
             rows.append({"_order": i, "설정": str(values[i]), **method_row(chosen, row.seed, scores, clips)})
     seeds = pd.DataFrame(rows)
     summary = seeds.drop(columns=["방법", "시드"]).groupby(["_order", "설정"]).mean().reset_index()

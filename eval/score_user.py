@@ -16,7 +16,7 @@ import pandas as pd
 import config
 from sequence_model.postprocess import from_dict
 from dataset.convert_labels import inside, join_yawns, label_json
-from eval.evaluate import EYE_RULES, FINAL, judge, load_clip, score_clips, summarize, write
+from eval.evaluate import EYE_RULES, FINAL, feature_path, judge, load_clip, score_clips, summarize, write
 
 DRIVER = "user01"
 MIN_EVENTS = 20         # Test2의 3초 이상 눈감김이 이보다 적으면 예비 결과다 (README)
@@ -40,10 +40,9 @@ def user_masks(segments: list[dict], n: int, fps: float) -> dict[str, np.ndarray
     return masks
 
 
-def convert(clip: str, label_dir: Path = config.USER_LABEL_DIR, feature_dir: Path = config.FEATURE_DIR, source: str = "user",
-            driver: str = DRIVER) -> dict:
+def convert(clip: str, label_dir: Path = config.USER_LABEL_DIR, source: str = "user", driver: str = DRIVER) -> dict:
     segments = json.loads((label_dir / f"{clip}.json").read_text(encoding="utf-8"))["segments"]
-    t = pd.read_parquet(feature_dir / f"{clip}.parquet", columns=["t"])["t"].to_numpy()
+    t = pd.read_parquet(feature_path(clip)[0], columns=["t"])["t"].to_numpy()
     fps = round(1 / float(np.median(np.diff(t))), 4)
     return label_json(clip, source, "reviewed", driver, fps, user_masks(segments, len(t), fps), USER_RULES)
 
@@ -52,12 +51,16 @@ def prepare(set_name: str) -> list[dict]:
     """세트의 사람 라벨을 9번 양식으로 바꿔 data/labels에 쓰고 load_clip 결과를 돌려준다."""
     from auto_label.user_review.server import video_set
 
-    videos, label_dir, _ = video_set(set_name)
-    clips = [Path(p).stem for p in videos]
+    if set_name == "webcam":        # Val2는 영상이 없는 PC에서도 채점한다: 완료 저장된 라벨이 기준이다
+        label_dir = config.WEBCAM_LABEL_DIR
+        clips = [p.stem for p in sorted(label_dir.glob("*.json"))]
+    else:
+        videos, label_dir, _ = video_set(set_name)
+        clips = [Path(p).stem for p in videos]
     missing = [c for c in clips if not (label_dir / f"{c}.json").exists()]
     if missing:
         raise SystemExit(f"완료 저장된 라벨이 없습니다: {missing}. python -m auto_label.user_review.server --set {set_name}으로 표시하세요")
-    no_features = [c for c in clips if not (config.FEATURE_DIR / f"{c}.parquet").exists()]
+    no_features = [c for c in clips if not feature_path(c)[0].exists()]
     if no_features:
         raise SystemExit(f"특징이 없습니다: {no_features}. python -m auto_label.extract --videos <영상 폴더>로 뽑으세요")
     source, driver = {"user": ("user", DRIVER), "webcam": ("webcam", DRIVER)}.get(set_name, ("test2", "test2"))
@@ -97,13 +100,12 @@ def score_test2() -> None:
 
 def yawn_lag(loaded: list[dict], tag: str, model: str, post) -> float:
     """모델 하품 판정이 겹친 정답 하품의 끝보다 얼마나 늦게 끝나는지(초, 중앙값). 대표 시드(_v01)로 잰다."""
-    from sequence_model.models import Predictor
     from rule_based.common import runs
-    from eval.evaluate import model_frames
+    from eval.evaluate import load_predictor, model_frames
 
-    predictor, lags = Predictor(config.RUNS / tag / f"{model}_v01.pt"), []
+    predictor, lags = load_predictor(config.RUNS / tag / f"{model}_v01.pt"), []
     for clip in loaded:
-        t, k = model_frames(clip["df"], predictor, post)
+        t, k = model_frames(clip["df"], predictor, post, clip["team"])
         for s, e in zip(*runs(k == config.YAWN)):
             end = t[e] + 1 / config.FPS
             ends = [te for ts, te in clip["truth"]["하품"] if ts < end and te > t[s]]

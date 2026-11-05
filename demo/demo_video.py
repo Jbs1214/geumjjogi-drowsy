@@ -19,7 +19,7 @@ from PIL import Image, ImageDraw, ImageFont
 import config
 from sequence_model.models import Predictor
 from sequence_model.postprocess import NONE, Post, display_classes, for_weights, yawn_classes
-from rule_based.alarm import DROWSY, ClosureTimer, stage_starts, timer_stages
+from rule_based.closure_timer import DROWSY, ClosureTimer, stage_starts, timer_stages
 from eval.evaluate import ear48_closed, grid_mouth_closed, grid_yawning, model_frames, model_timer_unknown, rule_timer_inputs
 
 FONT = Path("C:/Windows/Fonts/malgun.ttf")
@@ -67,7 +67,7 @@ def panel(state: int, stage: int, seconds: float, rule_stage: int, ear: float, m
     draw.text((x, y + round(8 * scale)), "모델 판정", font=small, fill=(210, 210, 210))
     badge(y, "준비 중" if state < 0 else config.CLASSES[state], CLASS_RGB[state])
     y += round(52 * scale)
-    draw.text((x, y + round(8 * scale)), f"눈 감은 시간 {seconds:.1f}초", font=small, fill="white")
+    draw.text((x, y + round(8 * scale)), f"모델 경고 (감은 {seconds:.1f}초)", font=small, fill="white")
     badge(y, STAGE_NAMES[stage], STAGE_RGB[stage])
     y += round(52 * scale)
     draw.text((x, y + round(8 * scale)), f"규칙 경고 (EAR {0.48})", font=small, fill=(210, 210, 210))
@@ -97,6 +97,14 @@ def strip(times: np.ndarray, values: np.ndarray, colors: dict, width: int, heigh
     return out
 
 
+def strip_label(text: str, height: int) -> np.ndarray:
+    """시간 띠 왼쪽에 붙이는 이름표 → RGBA."""
+    small = font(max(height - 4, 8))
+    image = Image.new("RGBA", (round(small.getlength(text)) + height, height), (0, 0, 0, 170))
+    ImageDraw.Draw(image).text((height // 2, height // 2), text, font=small, fill="white", anchor="lm")
+    return np.asarray(image)
+
+
 def render(video: Path, df: pd.DataFrame, predictor: Predictor, out: Path, post: Post = NONE) -> dict:
     times, classes = model_frames(df, predictor, post)
     # 타이머 입력은 파일 평가와 같다: 판정 불가·고개 숙임은 직전 눈 감김이 0.5초 이상이면 이어서 센다 (최종 기획서 5-1·5-3)
@@ -117,7 +125,9 @@ def render(video: Path, df: pd.DataFrame, predictor: Predictor, out: Path, post:
     duration = len(df) / fps_src
     scale = max(width / 1280, 0.5)
     row = max(round(20 * scale), 8)
-    strips = [strip(times, classes, CLASS_RGB, width, row, duration, -1), strip(times, stages, dict(enumerate(STAGE_RGB)), width, row, duration, 0)]
+    strips = [strip(times, classes, CLASS_RGB, width, row, duration, -1), strip(times, stages, dict(enumerate(STAGE_RGB)), width, row, duration, 0),
+              strip(frame_t, rule, dict(enumerate(STAGE_RGB)), width, row, duration, 0)]
+    labels = [strip_label(text, row) for text in ("모델 판정", "모델 경고", "규칙 경고 (EAR 0.48)")]
     out.parent.mkdir(parents=True, exist_ok=True)
     writer = None
     for backend, code in ((cv2.CAP_MSMF, "H264"), (cv2.CAP_FFMPEG, "mp4v")):
@@ -142,6 +152,7 @@ def render(video: Path, df: pd.DataFrame, predictor: Predictor, out: Path, post:
                 top = height - (len(strips) - k) * (row + 2)
                 frame[top:top + row] = (frame[top:top + row] * 0.35).astype(np.uint8)
                 frame[top:top + row, :done] = image[:, :done]
+                blend(frame, labels[k], 0, top)
             writer.write(frame)
             index += 1
     finally:
@@ -162,7 +173,9 @@ def main() -> None:
     args = parser.parse_args()
     df = pd.read_parquet(args.features or config.FEATURE_DIR / f"{args.input.stem}.parquet")
     out = args.out or config.RUNS / "demo" / f"{args.input.stem}_v3.mp4"
-    predictor = Predictor(args.weights)
+    from eval.evaluate import load_predictor
+
+    predictor = load_predictor(args.weights)
     post = for_weights(args.weights, predictor.name)
     result = render(args.input, df, predictor, out, post)
     print(f"저장: {out}, {result['frames']}프레임, 후처리 {post.label()}")

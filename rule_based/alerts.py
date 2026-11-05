@@ -1,14 +1,15 @@
 # 수정 기획서 F의 별도 알림. 웹캠과 데모가 같이 쓴다. 졸음 단계(ClosureTimer)와는 따로 동작한다.
 #   YawnTracker: 프레임마다 지금 하품 중인지 (rule_based.yawn.yawning과 같은 값, 지금까지 프레임만 씀)
 #   YawnRepeat:  하품이 5분에 3회면 하품 주의, 알린 뒤 2분 쿨다운 (기획서 4, 5-3)
-#   UnknownWatch: 판정 불가가 3초 이어지면 확인 필요 경고 (기획서 5-3 고개 숙임)
+#   UnknownWatch: 판정 불가·고개 숙임이 3초 이어지면 확인 필요 경고 (기술서 3.3). 무엇을 넣을지는 부르는 쪽(LiveJudge)이 정한다
 #   summary_markdown: 운전 후 요약 (기획서 4의 5·6)
 
 from dataclasses import dataclass
 
 import numpy as np
 
-from rule_based import config
+import config
+from rule_based import config as rule_config
 
 
 class YawnTracker:
@@ -18,12 +19,12 @@ class YawnTracker:
         self._open_since: float | None = None
 
     def update(self, t: float, mar: float) -> bool:
-        if mar is None or np.isnan(mar) or mar <= config.MAR_YAWN:
+        if mar is None or np.isnan(mar) or mar <= rule_config.MAR_YAWN:
             self._open_since = None
             return False
         if self._open_since is None:
             self._open_since = t
-        return t - self._open_since >= config.YAWN_MIN_SEC
+        return t - self._open_since >= rule_config.YAWN_MIN_SEC
 
 
 class MouthClosedWatch:
@@ -34,7 +35,7 @@ class MouthClosedWatch:
         self._since: float | None = None
 
     def update(self, t: float, mar: float) -> float:
-        if mar is None or np.isnan(mar) or mar > config.MAR_YAWN:
+        if mar is None or np.isnan(mar) or mar > rule_config.MAR_YAWN:
             self._since = None
             return 0.0
         if self._since is None:
@@ -64,7 +65,7 @@ class YawnRepeat:
             return False
         if self._since is None:
             self._since = t
-        if self._counted or t - self._since < config.YAWN_MIN_SEC - 1e-9:
+        if self._counted or t - self._since < rule_config.YAWN_MIN_SEC - 1e-9:
             return False
         self._counted = True
         self.times.append(self._since)
@@ -81,7 +82,7 @@ class YawnRepeat:
 
 
 class UnknownWatch:
-    """판정 불가가 UNKNOWN_ALERT_SEC 이어지면 확인 필요. 다시 판정되면 끝난다."""
+    """판정 불가·고개 숙임(unknown)이 UNKNOWN_ALERT_SEC 이어지면 확인 필요. unknown이 아니게 되면 끝난다."""
 
     def __init__(self) -> None:
         self._since: float | None = None

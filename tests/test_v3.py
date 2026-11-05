@@ -8,7 +8,7 @@ import pandas as pd
 import torch
 
 import config
-from sequence_model.build_windows import (channel_masks, clip_windows, end_indices, feature_matrix, fit_norm, frame_states, limit_aihub, normalize,
+from sequence_model.frames import (channel_masks, clip_windows, end_indices, feature_matrix, fit_norm, frame_states, limit_aihub, normalize,
                            resample_index, window_label)
 from sequence_model.models import CNN1D, LSTMClassifier
 from dataset.convert_labels import check_driver_split, check_value, label_json, nitymed_masks, yawn_events
@@ -143,6 +143,36 @@ class ModelTest(unittest.TestCase):
         self.assertEqual(tuple(CNN1D()(x).shape), (3, 4))
         self.assertEqual(tuple(LSTMClassifier()(x).shape), (3, 4))
 
+    def test_old_weights_load_with_tail_8(self):
+        """tail이 저장되지 않은 v1~v8 가중치는 끝 요약 8프레임으로 읽힌다."""
+        from sequence_model.models import Predictor, TAIL_FRAMES
+
+        torch.manual_seed(0)
+        model = CNN1D().eval()
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "old.pt"
+            norm = {"mean": [0.0] * 11, "std": [1.0] * 11, "features": list(config.FEATURES)}
+            torch.save({"model": "cnn1d", "state_dict": model.state_dict(), "norm": norm}, path)
+            predictor = Predictor(path)
+        self.assertEqual(predictor.model.tail, TAIL_FRAMES)
+        x = np.random.default_rng(0).normal(size=(2, 45, 11)).astype(np.float32)
+        x[:, :, config.FEATURES.index(config.FACE_COLUMN)] = 1.0
+        with torch.no_grad():
+            expected = torch.softmax(model(torch.from_numpy(x)), dim=1).numpy()
+        np.testing.assert_allclose(predictor.predict(x), expected, atol=1e-6)
+
+    def test_tail_changes_only_end_summary(self):
+        """tail 8은 기존 모델과 출력이 같고, tail 1은 같은 가중치에서 다른 출력을 낸다."""
+        torch.manual_seed(0)
+        base = CNN1D().eval()
+        same, short = CNN1D(tail=8).eval(), CNN1D(tail=1).eval()
+        same.load_state_dict(base.state_dict())
+        short.load_state_dict(base.state_dict())
+        x = torch.randn(2, 45, 11)
+        with torch.no_grad():
+            self.assertTrue(torch.equal(base(x), same(x)))
+            self.assertFalse(torch.allclose(base(x), short(x)))
+
     def test_frame_decisions(self):
         class Fake:
             def predict(self, windows):
@@ -158,7 +188,7 @@ class ModelTest(unittest.TestCase):
 class EvalTest(unittest.TestCase):
     def test_ear48_and_merge(self):
         df = features(100)
-        df.loc[40:60, "ear"] = 0.05
+        df.loc[40:60, ["ear", "ear_l", "ear_r"]] = 0.05
         self.assertTrue(ear48_closed(df, 25.0)[40:61].all())
         self.assertEqual(merge([(0.0, 1.0), (1.1, 2.0), (3.0, 4.0)]), [(0.0, 2.0), (3.0, 4.0)])
 
@@ -184,7 +214,7 @@ class LiveTest(unittest.TestCase):
     def test_live_matches_file(self):
         from demo.webcam import LiveJudge
         df = features(400)
-        df.loc[100:160, "ear"] = 0.05
+        df.loc[100:160, ["ear", "ear_l", "ear_r"]] = 0.05
         df.loc[250:330, "mar"] = 0.8
         df.loc[200:215, "face_found"] = False
         times, classes = model_frames(df, self.EndEar())
@@ -209,6 +239,26 @@ class LiveTest(unittest.TestCase):
             judge.update(float(t), vector)
         self.assertEqual(judge.history[-1][1], -1)
 
+    def test_live_log_rows(self):
+        """판정 로그는 격자마다 한 줄이고 열은 기술서 6.2와 같다. 창이 차기 전에는 확률이 비고, 이벤트는 생긴 줄에 적힌다."""
+        from demo.webcam import LOG_COLUMNS, LiveJudge, save_log
+        df = features(400)
+        df.loc[100:200, ["ear", "ear_l", "ear_r"]] = 0.05
+        judge = LiveJudge(self.EndEar())
+        for t, vector in zip(df["t"], feature_matrix(df)):
+            judge.update(float(t), vector)
+        log = pd.DataFrame(judge.log)
+        self.assertEqual(list(log.columns), LOG_COLUMNS)
+        self.assertEqual(len(log), len(judge.history))
+        self.assertTrue(log.loc[0, ["p_정상", "p_눈감김", "p_하품", "p_고개숙임"]].isna().all())
+        self.assertEqual(log.loc[0, "class"], "판정 불가")
+        self.assertIn("눈감김", set(log["class"]))
+        self.assertEqual([e for cell in log["event"] if cell for e in cell.split(";")], [e.kind for e in judge.events])
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "log.csv"
+            save_log(judge.log, path)
+            self.assertEqual(len(pd.read_csv(path, encoding="utf-8-sig")), len(log))
+
     def test_live_rule_uses_past_only(self):
         from demo.webcam import LiveRule
         rule = LiveRule()
@@ -222,7 +272,7 @@ class LiveTest(unittest.TestCase):
 
 class PostTest(unittest.TestCase):
     def test_grace_zero_is_old_timer_and_grace_bridges(self):
-        from rule_based.alarm import ClosureTimer, timer_stages
+        from rule_based.closure_timer import ClosureTimer, timer_stages
         t = np.arange(60) / 15
         closed = np.ones(60, bool)
         closed[20:22] = False                   # 0.133초 끊김
@@ -236,7 +286,7 @@ class PostTest(unittest.TestCase):
 
     def test_bridge_matches_timer(self):
         from sequence_model.postprocess import bridge
-        from rule_based.alarm import timer_stages
+        from rule_based.closure_timer import timer_stages
         rng = np.random.default_rng(0)
         t = np.arange(300) / 15
         closed = rng.random(300) < 0.7
@@ -246,7 +296,7 @@ class PostTest(unittest.TestCase):
             b = timer_stages(t, bridged)
             # 타이머가 이어 가는 끊김과 구간을 잇는 끊김이 같아서 졸음 경고 수가 같다.
             # grace 타이머는 끊김 동안 시간을 늘리지 않으므로 경고가 같거나 grace 안에서 늦다
-            from rule_based.alarm import stage_starts
+            from rule_based.closure_timer import stage_starts
             sa, sb = stage_starts(t, a), stage_starts(t, b)
             self.assertTrue(np.all(bridged >= closed))
             self.assertEqual(len(sa), len(sb))
@@ -272,7 +322,7 @@ class PostTest(unittest.TestCase):
                 out[:, 1], out[:, 0] = p, 1 - p
                 return out
         df = features(300)
-        df["ear"] = 0.3 - 0.25 * np.sin(np.arange(300) / 9) ** 2
+        df["ear"] = df["ear_l"] = df["ear_r"] = 0.3 - 0.25 * np.sin(np.arange(300) / 9) ** 2
         post = Post(0.3, 0.2)
         times, classes = model_frames(df, Soft(), post)
         judge = LiveJudge(Soft(), post)
@@ -287,13 +337,111 @@ class PostTest(unittest.TestCase):
         probs = np.array([[0.4, 0.55, 0.05, 0.0], [0.2, 0.75, 0.05, 0.0], [0.5, 0.45, 0.05, 0.0], [0.1, 0.62, 0.0, 0.28]])
         judged = np.ones(4, bool)
         self.assertEqual(decide(probs, judged).tolist(), [C, C, N, C])
-        self.assertEqual(decide(probs, judged, Post(enter=0.7)).tolist(), [N, C, N, H])     # 확률이 모자라면 다른 클래스
+        # 확률이 모자라면 다른 클래스. 고개숙임은 pitch 규칙으로 정하므로(config.HEAD_FROM_PITCH) 모델 출력에서 빠진다
+        self.assertEqual(decide(probs, judged, Post(enter=0.7)).tolist(), [N, C, N, N])
         self.assertEqual(decide(probs, judged, Post(exit=0.4, enter=0.7)).tolist(), [N, C, C, C])
         self.assertEqual(drop_short(np.array([1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1], bool), 1 / 15, 0.5).tolist(),
                          [False, False, False] + [True] * 8)
         self.assertEqual(display_classes(np.array([C, C, N]), np.array([0.2, 0.6, 0.0])).tolist(), [N, C, N])
         self.assertEqual(CANDIDATES[0], NONE)
         self.assertEqual(len(CANDIDATES), 96)
+
+    def test_eye_rules_and_exit_below(self):
+        """고개숙임은 pitch 규칙(기술서 7·8, 기준 config.HEAD_PITCH_DOWN). 한쪽 눈만 감으면 정상, 숙인 채 두 눈이 감기면 눈감김
+        (11.04 사용자 결정, 기술서 2.4 눈감김 > 고개숙임). 꺼짐은 눈감김 확률 0.4 미만이면 argmax가 눈감김이어도 끈다(기술서 3.1)."""
+        from sequence_model.postprocess import Post, apply_rules, decide, eye_flags
+        row = lambda pitch, ear_l, ear_r, blink_l, blink_r: [1.0 if c == config.FACE_COLUMN else {"pitch": pitch, "ear_l": ear_l, "ear_r": ear_r,
+                    "blink_l": blink_l, "blink_r": blink_r}.get(c, 0.0) for c in config.FEATURES]
+        X = np.array([row(0, 0.3, 0.3, 0.1, 0.1),        # 정면, 두 눈 뜸
+                      row(0, 0.3, 0.06, 0.2, 0.7),       # 정면, 한쪽 눈만 감음
+                      row(30, 0.07, 0.06, 0.6, 0.7),     # 숙임, 두 눈 감음
+                      row(30, 0.3, 0.28, 0.1, 0.1)])     # 숙임, 두 눈 뜸
+        flags = eye_flags(X)
+        self.assertEqual(flags.tolist(), [[False, False, False], [False, True, False], [True, False, True], [True, False, False]])
+        probs = np.array([[0.1, 0.1, 0.0, 0.8], [0.1, 0.8, 0.1, 0.0], [0.9, 0.1, 0.0, 0.0], [0.8, 0.1, 0.1, 0.0]])
+        self.assertEqual(decide(probs, np.ones(4, bool), flags=flags).tolist(), [N, N, C, H])
+        self.assertEqual(apply_rules(-1, (True, False, True)), -1)            # 판정 불가는 그대로
+        spec = Post(exit=0.4, enter=0.6)
+        on_off = np.array([[0.2, 0.7, 0.1, 0.0], [0.33, 0.38, 0.29, 0.0], [0.5, 0.42, 0.08, 0.0]])
+        self.assertEqual(decide(on_off, np.ones(3, bool), spec).tolist(), [C, N, N])        # 0.38은 argmax여도 꺼짐
+
+    def test_relative_pitch_baseline(self):
+        """고개 숙임은 정면 기준 상대 pitch(11.04 사용자 결정). 기준은 두 눈 뜬 정면 프레임의 pitch 중앙값이고,
+        감은 프레임과 이미 숙인 프레임은 기준에 넣지 않는다. 기준이 없으면 절대 기준(HEAD_PITCH_DOWN)을 쓴다."""
+        from unittest import mock
+        from sequence_model.postprocess import PitchBaseline, eye_flags, pitch_baselines
+        row = lambda pitch, ear: [1.0 if c == config.FACE_COLUMN else {"pitch": pitch, "ear_l": ear, "ear_r": ear}.get(c, 0.0)
+                                  for c in config.FEATURES]
+        self.assertTrue(np.isnan(PitchBaseline().value))
+        X = np.array([row(8, 0.3), row(10, 0.3), row(30, 0.05), row(9, 0.3), row(40, 0.3), row(30, 0.3)])
+        self.assertEqual(pitch_baselines(np.arange(6) / 15, X).tolist(), [8, 9, 9, 9, 9, 9])
+        low = np.array([row(0, 0.3), row(18, 0.3)])         # 정면이 0도인 카메라에서 18도 숙임
+        rel = config.HEAD_PITCH_DOWN_REL
+        with mock.patch.object(config, "HEAD_PITCH_RELATIVE", True):         # 11.05부터 기본은 꺼짐(기술서 기준)
+            self.assertEqual(eye_flags(low, pitch_baselines(np.arange(2) / 15, low))[:, 0].tolist(), [False, 18 > rel])
+        with mock.patch.object(config, "HEAD_PITCH_RELATIVE", False):        # 끄면 기준을 줘도 절대 25도
+            self.assertEqual(eye_flags(low, pitch_baselines(np.arange(2) / 15, low))[:, 0].tolist(), [False, False])
+        self.assertEqual(eye_flags(low)[:, 0].tolist(), [False, False])                       # 기준을 안 주면 절대 25도
+        self.assertTrue(eye_flags(np.array([row(30, 0.3)]), np.nan)[0, 0])                   # 기준 NaN이면 절대 기준
+
+    def test_ear_sides_by_tag(self):
+        """v8부터 팀 좌우 기준. 이전 기준과는 ear_l·ear_r만 다르다(blink는 같음, README 11.04)."""
+        from sequence_model.postprocess import swap_ears, team_sides
+        self.assertTrue(team_sides(Path("runs/v8/cnn1d_v01.pt")))
+        self.assertFalse(team_sides(Path("runs/v7/cnn1d_v01.pt")))
+        self.assertFalse(team_sides(Path("weights/cnn1d.pt")))
+        v = np.arange(len(config.FEATURES), dtype=float)
+        s = swap_ears(v)
+        index = config.FEATURES.index
+        self.assertEqual((s[index("ear_l")], s[index("ear_r")]), (v[index("ear_r")], v[index("ear_l")]))
+        self.assertEqual(s[index("blink_l")], v[index("blink_l")])
+
+    def test_webcam_settings_override(self):
+        """설정 B 실행 옵션: --grace는 이번 실행의 후처리만, --head-rel·--backend는 이번 실행의 config 값만 바꾼다."""
+        from demo.webcam import apply_settings
+        from sequence_model.postprocess import Post
+        saved = (config.HEAD_PITCH_DOWN_REL, config.WEBCAM_BACKEND)
+        try:
+            post = Post(exit=0.4, enter=0.6)
+            self.assertIs(apply_settings(post), post)
+            changed = apply_settings(post, grace=0.2, head_rel=10.0, backend="DSHOW")
+            self.assertEqual((changed.grace, changed.exit, changed.enter), (0.2, 0.4, 0.6))
+            self.assertEqual((config.HEAD_PITCH_DOWN_REL, config.WEBCAM_BACKEND), (10.0, "DSHOW"))
+        finally:
+            config.HEAD_PITCH_DOWN_REL, config.WEBCAM_BACKEND = saved
+
+    def test_head_down_check_needed(self):
+        """확인 필요: 고개 숙임이 3초 이어지고 그 사이 눈 감김을 이어 세지 않으면 낸다(기술서 3.3). 감은 채 숙이면 눈감김으로 센다."""
+        from demo.webcam import LiveJudge
+        df = features(400)
+        df.loc[100:300, "pitch"] = 30.0
+        judge = LiveJudge(LiveTest.EndEar())
+        for t, vector in zip(df["t"], feature_matrix(df)):
+            judge.update(float(t), vector)
+        self.assertIn("확인 필요", [e.kind for e in judge.events])
+        df.loc[100:300, ["ear", "ear_l", "ear_r"]] = 0.05
+        df.loc[100:300, ["blink_l", "blink_r"]] = 0.8
+        judge = LiveJudge(LiveTest.EndEar())
+        for t, vector in zip(df["t"], feature_matrix(df)):
+            judge.update(float(t), vector)
+        kinds = [e.kind for e in judge.events]
+        self.assertIn("졸음", kinds)
+        self.assertNotIn("확인 필요", kinds)
+
+    def test_live_matches_file_with_pitch(self):
+        """pitch 규칙 고개숙임도 실시간(LiveJudge)과 파일 평가(model_frames)가 같은 칸에서 같은 클래스를 낸다."""
+        from demo.webcam import LiveJudge
+        df = features(300)
+        df.loc[120:200, "pitch"] = 30.0
+        df.loc[150:170, ["ear", "ear_l", "ear_r"]] = 0.05
+        times, classes = model_frames(df, LiveTest.EndEar())
+        judge = LiveJudge(LiveTest.EndEar())
+        for t, vector in zip(df["t"], feature_matrix(df)):
+            judge.update(float(t), vector)
+        live = np.array([h[1] for h in judge.history])
+        n = min(len(live), len(classes))
+        np.testing.assert_array_equal(live[:n], classes[:n])
+        self.assertTrue((live == H).any() and (live == C).any())
 
     def test_live_matches_file_with_enter(self):
         from sequence_model.postprocess import Post
@@ -307,7 +455,7 @@ class PostTest(unittest.TestCase):
                 out[:, 1], out[:, 0] = p, 1 - p
                 return out
         df = features(300)
-        df["ear"] = 0.3 - 0.25 * np.sin(np.arange(300) / 9) ** 2
+        df["ear"] = df["ear_l"] = df["ear_r"] = 0.3 - 0.25 * np.sin(np.arange(300) / 9) ** 2
         post = Post(0.3, 0.2, 0.7, 0.5)
         times, classes = model_frames(df, Soft(), post)
         judge = LiveJudge(Soft(), post)
@@ -370,7 +518,7 @@ class DmdTest(unittest.TestCase):
 
 class SpecFTest(unittest.TestCase):
     def test_carry_over_unknown(self):
-        from rule_based.alarm import timer_stages
+        from rule_based.closure_timer import timer_stages
         t = np.arange(75) / 15
         closed = np.zeros(75, bool)
         unknown = np.zeros(75, bool)
@@ -381,7 +529,7 @@ class SpecFTest(unittest.TestCase):
         self.assertEqual(int(timer_stages(t, closed, unknown=unknown)[-1]), 0)
 
     def test_yawn_closure_excluded_and_select_limit(self):
-        from rule_based.alarm import timer_stages
+        from rule_based.closure_timer import timer_stages
         from eval.evaluate import select
         t = np.arange(60) / 15
         closed = np.ones(60, bool)
@@ -414,7 +562,7 @@ class SpecFTest(unittest.TestCase):
 
     def test_live_timer_matches_file(self):
         from sequence_model.postprocess import Post, display_classes, yawn_classes
-        from rule_based.alarm import timer_stages
+        from rule_based.closure_timer import timer_stages
         from rule_based.alerts import MouthClosedWatch, YawnTracker
         from demo.demo_video import elapsed
         from eval.evaluate import grid_mouth_closed, grid_yawning, model_timer_unknown
@@ -433,9 +581,9 @@ class SpecFTest(unittest.TestCase):
         for relative, post in ((False, Post(grace=0.2)), (True, Post(grace=0.2)), (True, Post(grace=0.2, yawn_mode="union", carry_max=1.0))):
             Soft.relative = relative
             df = features(600)
-            df["ear"] = 0.3 - 0.27 * (np.sin(np.arange(600) / 40) > 0.3)
+            df["ear"] = df["ear_l"] = df["ear_r"] = 0.3 - 0.27 * (np.sin(np.arange(600) / 40) > 0.3)
             df["mar"] = 0.1 + 0.4 * ((np.arange(600) // 90) % 3 == 1)
-            df["pitch"] = 20.0 * ((np.arange(600) % 200) > 170)
+            df["pitch"] = 30.0 * ((np.arange(600) % 200) > 170)
             df.loc[300:330, "face_found"] = False
             times, classes = model_frames(df, Soft(), post)
             unknown = model_timer_unknown(classes)
@@ -454,7 +602,7 @@ class SpecFTest(unittest.TestCase):
             np.testing.assert_array_equal(live_shown[:n], shown[:n])
 
     def test_head_down_carries_and_rule_inputs(self):
-        from rule_based.alarm import timer_stages
+        from rule_based.closure_timer import timer_stages
         from eval.evaluate import model_timer_unknown, rule_timer_inputs
         t = np.arange(75) / 15
         classes = np.full(75, N)
@@ -463,7 +611,7 @@ class SpecFTest(unittest.TestCase):
         classes[:4], classes[4:] = C, H                  # 0.2초만 감은 뒤 숙임 → 이어서 세지 않음
         self.assertEqual(int(timer_stages(t, classes == C, unknown=model_timer_unknown(classes))[-1]), 0)
         df = features(10)
-        df["pitch"] = [0, 0, 20, 20, 0, 0, 0, 0, 0, 0]
+        df["pitch"] = [0, 0, 30, 30, 0, 0, 0, 0, 0, 0]
         df.loc[5, "face_found"] = False
         self.assertEqual(np.flatnonzero(rule_timer_inputs(df)["unknown"]).tolist(), [2, 3, 5])
         self.assertNotIn("yawn", rule_timer_inputs(df))  # 최종 기획서: 하품 중 감음도 센다
@@ -489,7 +637,7 @@ class SpecFTest(unittest.TestCase):
 
     def test_yawn_modes_and_carry_cap(self):
         from sequence_model.postprocess import shown_yawn, yawn_classes
-        from rule_based.alarm import timer_stages
+        from rule_based.closure_timer import timer_stages
         classes = np.array([Y, Y, N, N, C])
         mouth = np.array([0.0, 0.2, 0.0, 0.0, 0.0])           # 두 번째 프레임은 입을 다문 지 0.2초
         rule = np.array([False, True, True, False, True])
@@ -665,6 +813,79 @@ class MinyoungWindowsTest(unittest.TestCase):
             self.write(Path(folder), columns)
             with self.assertRaises(SystemExit):
                 load_windows(Path(folder))
+
+
+class SiteReportTest(unittest.TestCase):
+    """Streamlit 사이트의 운전 후 리포트: 판정 로그 읽기, 눈 감김 한 번마다 길이, 5분 구간 이벤트 수 (기술서 6.3)."""
+
+    def test_episodes_keep_only_warn_or_longer(self):
+        from demo.charts import closure_episodes
+        sec = [0, 0.5, 1.0, 0, 0, 1.0, 2.0, 3.2, 0, 0.4, 1.6]       # 깜빡임 1.0초, 졸음 3.2초, 끝까지 이어진 주의 1.6초
+        stage = ["정상"] * 6 + ["주의", "졸음", "정상", "정상", "주의"]   # 단계는 화면에 뜬 값을 쓴다
+        frame = pd.DataFrame({"시각": np.arange(len(sec)) * 0.5, "연속 눈 감김": sec, "단계": stage})
+        episodes = closure_episodes(frame)
+        self.assertEqual(episodes["길이"].tolist(), [3.2, 1.6])
+        self.assertEqual(episodes["단계"].tolist(), ["졸음", "주의"])
+        self.assertEqual(episodes["시작"].tolist(), [2.5, 4.5])
+
+    def test_log_frames_split_events(self):
+        from demo.report import log_frames, log_label
+        from demo.webcam import LOG_COLUMNS
+        rows = [["2026-11-05T14:47:11.000", 5.0, "정상", 0.0, *[np.nan] * 4, "정상", ""],
+                ["2026-11-05T14:47:11.067", 6.5, "졸음", 3.0, *[0.1] * 4, "눈감김", "주의;졸음"]]
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "20261105_144711_streamlit_log.csv"
+            pd.DataFrame(rows, columns=LOG_COLUMNS).to_csv(path, index=False, encoding="utf-8-sig")
+            timeline, events = log_frames(path)
+            self.assertEqual(log_label(path), "2026-11-05 14:47 Streamlit")
+        self.assertEqual(timeline["시각"].tolist(), [0.0, 1.5])
+        self.assertEqual(events.values.tolist(), [[1.5, "주의"], [1.5, "졸음"]])
+
+    def test_bucket_counts_by_five_minutes(self):
+        from demo.charts import bucket_chart
+        events = pd.DataFrame({"시각": [10.0, 299.0, 301.0, 620.0], "이벤트": ["주의", "졸음", "주의", "확인 필요"]})
+        data = pd.DataFrame(bucket_chart(events, 650.0).to_dict()["datasets"].popitem()[1])
+        got = data[data["횟수"] > 0].set_index(["구간", "이벤트"])["횟수"].to_dict()
+        self.assertEqual(got, {("0~5분", "졸음"): 1, ("0~5분", "주의"): 1, ("5~10분", "주의"): 1, ("10~15분", "확인 필요"): 1})
+
+    def test_log_label_falls_back_to_file_name(self):
+        from demo.report import log_label
+        self.assertEqual(log_label(Path("메모_log.csv")), "메모_log.csv")
+
+
+class LiveSessionTest(unittest.TestCase):
+    """Streamlit 운전 한 번 = reset()부터 finish()까지. 화면이 다시 그려져도 한 번만 저장하고, reset()은 기록을 비운다."""
+
+    def session(self):
+        import threading
+        from demo.streamlit_app import LiveSession
+        from sequence_model.postprocess import NONE
+        s = LiveSession.__new__(LiveSession)        # 모델·얼굴 인식기 없이 판정 기록만 다룬다
+        s.predictor, s.post, s.beeper, s.lock = object(), NONE, None, threading.Lock()
+        s.reset()
+        return s
+
+    def drive(self, s, seconds: float) -> None:
+        from rule_based.alerts import Event
+        s.judge.history += [(0.0, N, 0, N, 0.0), (seconds, C, 2, C, 3.0)]
+        s.judge.events.append(Event(seconds, "졸음"))
+        s.judge.log.append({"video_t": seconds})
+
+    def test_finish_saves_once_and_reset_starts_new_drive(self):
+        with tempfile.TemporaryDirectory() as folder:
+            runs, config.RUNS = config.RUNS, Path(folder)
+            try:
+                s = self.session()
+                self.drive(s, 10.0)
+                first = s.finish()
+                self.assertIs(s.finish(), first)             # 다시 그려도 같은 기록, 저장은 한 번
+                self.assertEqual(len(list((Path(folder) / "sessions").glob("*_log.csv"))), 1)
+                self.assertEqual(first["seconds"], 10.0)
+                s.reset()
+                self.assertIsNone(s.finished)
+                self.assertEqual((s.judge.history, s.judge.events), ([], []))
+            finally:
+                config.RUNS = runs
 
 
 if __name__ == "__main__":

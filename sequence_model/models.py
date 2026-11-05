@@ -11,8 +11,11 @@ TAIL_FRAMES = round(config.FPS * 0.5)     # 끝 0.5초 (8프레임)
 
 
 class CNN1D(nn.Module):
-    def __init__(self, n_features: int = len(config.FEATURES), n_classes: int = config.N_CLASSES, channels: int = 32, dropout: float = 0.3) -> None:
+    def __init__(self, n_features: int = len(config.FEATURES), n_classes: int = config.N_CLASSES, channels: int = 32, dropout: float = 0.3,
+                 tail: int = TAIL_FRAMES) -> None:
+        """tail: 끝 요약에 쓰는 프레임 수 (v9 실험, 기본 8은 v1~v8과 같다)."""
         super().__init__()
+        self.tail = tail
         self.body = nn.Sequential(
             nn.Conv1d(n_features, channels, kernel_size=5, padding=2), nn.BatchNorm1d(channels), nn.ReLU(),
             nn.Conv1d(channels, channels, kernel_size=5, padding=2), nn.BatchNorm1d(channels), nn.ReLU(),
@@ -21,7 +24,7 @@ class CNN1D(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = self.body(x.transpose(1, 2))
-        return self.head(torch.cat([out.mean(dim=-1), out[..., -TAIL_FRAMES:].mean(dim=-1)], dim=1))
+        return self.head(torch.cat([out.mean(dim=-1), out[..., -self.tail:].mean(dim=-1)], dim=1))
 
 
 class LSTMClassifier(nn.Module):
@@ -35,9 +38,9 @@ class LSTMClassifier(nn.Module):
         return self.head(torch.cat([out.mean(dim=1), out[:, -TAIL_FRAMES:].mean(dim=1)], dim=1))
 
 
-def build_model(name: str) -> nn.Module:
+def build_model(name: str, tail: int = TAIL_FRAMES) -> nn.Module:
     if name == "cnn1d":
-        return CNN1D()
+        return CNN1D(tail=tail)
     if name == "lstm":
         return LSTMClassifier()
     raise ValueError(f"모델 이름은 {MODEL_NAMES} 중 하나여야 합니다: {name}")
@@ -50,13 +53,13 @@ class Predictor:
         saved = torch.load(path, map_location=device, weights_only=False)
         self.name, self.norm, self.device = saved["model"], saved["norm"], device
         self.relative = bool(self.norm.get("relative", False))     # 세션 기준 특징으로 학습한 가중치인지 (session.py, v7부터)
-        self.model = build_model(saved["model"]).to(device)
+        self.model = build_model(saved["model"], saved.get("tail", TAIL_FRAMES)).to(device)     # tail이 없는 v1~v8 가중치는 8
         self.model.load_state_dict(saved["state_dict"])
         self.model.eval()
 
     def predict(self, windows, batch: int = 4096):
         import numpy as np
-        from sequence_model.build_windows import normalize
+        from sequence_model.frames import normalize
 
         out = []
         with torch.no_grad():

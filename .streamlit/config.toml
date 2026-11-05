@@ -9,3 +9,11 @@ gatherUsageStats = false
 
 [client]
 toolbarMode = "minimal"
+
+# 야간 계기판 색. 글꼴과 경고등 색은 demo/cluster.py에 있다
+[theme]
+base = "dark"
+primaryColor = "#36BFAE"
+backgroundColor = "#1F2329"
+secondaryBackgroundColor = "#2A2F37"
+textColor = "#E6E8EB"

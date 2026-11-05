@@ -1,8 +1,11 @@
 # 모델의 프레임별 확률 → 클래스. 눈감김 판정이 끊기거나 너무 민감한 것을 줄이는 후처리다 (README "성능 개선 판정 기준",
 # "깜빡임·실눈 민감도 후처리").
 #   enter: 눈감김 확률이 이 값 이상일 때만 눈감김에 들어간다. None이면 argmax가 눈감김일 때 들어간다.
-#   exit(히스테리시스): 들어간 뒤에는 argmax가 눈감김이거나 눈감김 확률이 exit 이상인 동안 유지한다.
-#   grace(끊김 허용): 눈감김 타이머(rule_based.alarm.ClosureTimer)가 뜬 시간이 grace보다 짧으면 이어 간다.
+#   exit(히스테리시스): 들어간 뒤에는 눈감김 확률이 exit 이상인 동안 유지하고, exit 미만이면 끈다(기술서 3.1, 김민영 님과 합의).
+#         None이면 argmax가 눈감김인 동안 유지한다.
+#   고개숙임·눈 상태: config.HEAD_FROM_PITCH이면 고개숙임은 모델 출력에서 빼고 pitch 규칙으로 정하고, 한쪽 눈 뜸·숙인 채 두 눈 감음
+#         규칙을 적용한다(eye_flags, apply_rules, 기술서 2.4·7·8과 11.04 사용자 결정). 고개숙임은 정면 기준 상대 pitch다(PitchBaseline).
+#   grace(끊김 허용): 눈감김 타이머(rule_based.closure_timer.ClosureTimer)가 뜬 시간이 grace보다 짧으면 이어 간다.
 #   min_close: 이보다 짧은 눈감김 구간은 구간 채점에서 지운다. 경고 타이머는 그대로다.
 # enter, exit, grace는 지금까지의 프레임만 쓰므로 파일 평가와 실시간(demo.webcam)이 같은 값을 낸다.
 
@@ -84,24 +87,116 @@ class Hysteresis:
             return -1
         k = int(np.argmax(prob))
         p = float(prob[config.CLOSED])
-        if self.closed and (k == config.CLOSED or (self.post.exit is not None and p >= self.post.exit)):
+        keep = k == config.CLOSED if self.post.exit is None else p >= self.post.exit
+        if self.closed and keep:
             return config.CLOSED
         can_enter = k == config.CLOSED if self.post.enter is None else p >= self.post.enter
         if can_enter:
             self.closed = True
             return config.CLOSED
         self.closed = False
-        if k == config.CLOSED:      # 확률이 enter에 못 미치면 나머지 클래스 중 가장 높은 것
-            others = np.array(prob, dtype=float)
-            others[config.CLOSED] = -np.inf
-            k = int(np.argmax(others))
-        return k
+        # 눈감김이 아니면 나머지 클래스 중 가장 높은 것. 고개숙임은 pitch 규칙으로 정하므로 모델 출력에서 뺀다
+        others = np.array(prob, dtype=float)
+        others[config.CLOSED] = -np.inf
+        if config.HEAD_FROM_PITCH:
+            others[config.HEAD] = -np.inf
+        return int(np.argmax(others))
 
 
-def decide(probs: np.ndarray, judged: np.ndarray, post: Post = NONE) -> np.ndarray:
-    """프레임별 확률 (N, 4)와 판정 여부 → 프레임별 클래스 (판정 안 함은 -1)."""
+class PitchBaseline:
+    """정면 pitch 기준 (고개 숙임 상대 판정, config.HEAD_PITCH_RELATIVE). 세션 시작 config.PITCH_BASE_SEC 안에서 두 눈을 뜬
+    (두 EAR ≥ rule_based/config.EAR_CLOSED) 검출 프레임의 pitch 중앙값이다. 감은 채 숙인 프레임과, 그 시점 기준으로 이미 고개 숙임인
+    프레임(기준이 없을 때는 절대 HEAD_PITCH_DOWN, 있으면 상대 HEAD_PITCH_DOWN_REL)은 기준에 넣지 않는다.
+    지금까지의 프레임만 쓰므로 파일 평가와 실시간이 같다. 아직 없으면 NaN이다."""
+
+    def __init__(self) -> None:
+        self._t0: float | None = None
+        self._values: list[float] = []
+        self.value = float("nan")
+
+    def update(self, t: float, vector: np.ndarray) -> float:
+        """시각 t의 원시 특징 행(11개) → 지금까지의 정면 pitch 기준."""
+        import bisect
+
+        from rule_based.config import EAR_CLOSED
+
+        if self._t0 is None:
+            self._t0 = t
+        row = np.asarray(vector, dtype=float)
+        get = lambda name: row[config.FEATURES.index(name)]
+        pitch = get("pitch")
+        down = pitch > config.HEAD_PITCH_DOWN if np.isnan(self.value) else pitch - self.value > config.HEAD_PITCH_DOWN_REL
+        if (t - self._t0 <= config.PITCH_BASE_SEC + 1e-9 and get(config.FACE_COLUMN) > 0.5
+                and min(get("ear_l"), get("ear_r")) >= EAR_CLOSED and not down):
+            bisect.insort(self._values, float(pitch))
+            n = len(self._values)
+            self.value = (self._values[(n - 1) // 2] + self._values[n // 2]) / 2
+        return self.value
+
+
+def pitch_baselines(t: np.ndarray, X: np.ndarray) -> np.ndarray:
+    """프레임 시각과 원시 특징 (N, 11) → 프레임별 정면 pitch 기준 (PitchBaseline과 같다)."""
+    baseline = PitchBaseline()
+    return np.array([baseline.update(float(ti), row) for ti, row in zip(t, X)], dtype=float)
+
+
+def team_sides(weights) -> bool:
+    """가중치 경로의 tag 폴더(runs/v8/…) → 팀 좌우 기준으로 학습했는지 (config.TEAM_SIDES_FROM_TAG 이상)."""
+    import re
+
+    found = re.fullmatch(r"v(\d+)", Path(weights).parent.name)
+    return bool(found) and int(found.group(1)) >= config.TEAM_SIDES_FROM_TAG
+
+
+def swap_ears(X: np.ndarray) -> np.ndarray:
+    """특징 (…, 11)의 ear_l·ear_r을 바꾼다. 이전 좌우 기준(v1~v7)과 팀 기준(v8~)은 이 두 열만 다르다(README 11.04)."""
+    out = np.array(X, copy=True)
+    left, right = config.FEATURES.index("ear_l"), config.FEATURES.index("ear_r")
+    out[..., [left, right]] = out[..., [right, left]]
+    return out
+
+
+def eye_flags(X: np.ndarray, base: np.ndarray | float | None = None) -> np.ndarray:
+    """원시 특징 행 (N, 11) → (N, 3) bool: 고개 숙임, 한쪽 눈만 감음(다른 눈은 뜸), 두 눈 모두 감음. 얼굴 미검출 행은 모두 거짓.
+    고개 숙임: base(행별 정면 pitch, PitchBaseline)를 주고 config.HEAD_PITCH_RELATIVE이면 pitch − base > HEAD_PITCH_DOWN_REL,
+    아니면(또는 base가 NaN이면) pitch > HEAD_PITCH_DOWN. 기준은 rule_based/config.EAR_CLOSED, config.BLINK_CLOSED, config.WINK_BLINK_DIFF."""
+    from rule_based.config import EAR_CLOSED
+
+    X = np.atleast_2d(np.asarray(X, dtype=float))
+    col = {name: X[:, config.FEATURES.index(name)] for name in ("pitch", "ear_l", "ear_r", "blink_l", "blink_r")}
+    found = X[:, config.FEATURES.index(config.FACE_COLUMN)] > 0.5
+    ear_max = np.maximum(col["ear_l"], col["ear_r"])
+    down = col["pitch"] > config.HEAD_PITCH_DOWN
+    if base is not None and config.HEAD_PITCH_RELATIVE:
+        base = np.broadcast_to(np.asarray(base, dtype=float), col["pitch"].shape)
+        down = np.where(np.isnan(base), down, col["pitch"] - np.nan_to_num(base) > config.HEAD_PITCH_DOWN_REL)
+    head_down = found & down
+    one_open = found & (ear_max >= EAR_CLOSED) & (np.abs(col["blink_l"] - col["blink_r"]) >= config.WINK_BLINK_DIFF)
+    both_closed = found & (ear_max < EAR_CLOSED) & (np.minimum(col["blink_l"], col["blink_r"]) >= config.BLINK_CLOSED)
+    return np.column_stack([head_down, one_open, both_closed])
+
+
+def apply_rules(state: int, flags) -> int:
+    """판정한 칸(state ≥ 0)에 눈 상태·고개 숙임 규칙을 적용한다. flags = (고개 숙임, 한쪽 눈만 감음, 두 눈 감음).
+    ① 한쪽 눈만 감았으면 눈감김이 아니다(정상) ② 고개를 숙였으면 두 눈이 감겼을 때 눈감김, 아니면 고개숙임.
+    우선순위 눈감김 > 고개숙임 > 하품 > 정상(기술서 2.4). 판정 불가(-1)는 그대로 둔다."""
+    if state < 0:
+        return state
+    head_down, one_open, both_closed = (bool(f) for f in flags)
+    if state == config.CLOSED and one_open:
+        state = config.NORMAL
+    if config.HEAD_FROM_PITCH and head_down:
+        return config.CLOSED if (state == config.CLOSED or both_closed) else config.HEAD
+    return state
+
+
+def decide(probs: np.ndarray, judged: np.ndarray, post: Post = NONE, flags: np.ndarray | None = None) -> np.ndarray:
+    """프레임별 확률 (N, 4)와 판정 여부 → 프레임별 클래스 (판정 안 함은 -1). flags: 프레임별 eye_flags 결과."""
     h = Hysteresis(post)
-    return np.array([h.step(p if j else None) for p, j in zip(probs, judged)], dtype=int)
+    states = [h.step(p if j else None) for p, j in zip(probs, judged)]
+    if flags is not None:
+        states = [apply_rules(s, f) for s, f in zip(states, flags)]
+    return np.array(states, dtype=int)
 
 
 def bridge(times: np.ndarray, mask: np.ndarray, grace: float) -> np.ndarray:
@@ -130,7 +225,7 @@ def display_classes(classes: np.ndarray, elapsed: np.ndarray, min_sec: float = c
                     mouth_closed: np.ndarray | None = None) -> np.ndarray:
     """화면에 보일 클래스. 이어서 감은 시간이 min_sec보다 짧은 눈감김은 정상으로 보인다(깜빡임).
     mouth_closed(입 다문 채 이어진 초)를 주면, 입을 다문 지 YAWN_DISPLAY_CLOSED_SEC가 지난 하품도 정상으로 보인다."""
-    from rule_based.config import YAWN_DISPLAY_CLOSED_SEC
+    from config import YAWN_DISPLAY_CLOSED_SEC
 
     out = np.asarray(classes).copy()
     out[(out == config.CLOSED) & (np.asarray(elapsed) < min_sec - 1e-9)] = config.NORMAL

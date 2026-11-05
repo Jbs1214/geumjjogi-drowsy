@@ -1,4 +1,4 @@
-# build_windows.py 결과로 1D-CNN·LSTM을 GPU로 학습한다. 시드마다 가중치 하나, 표는 runs/<tag>/experiments.csv.
+# 창 폴더(sequence_model/frames.py 또는 김민영 build_windows.py 결과)로 1D-CNN·LSTM을 GPU로 학습한다. 시드마다 가중치 하나, 표는 runs/<tag>/experiments.csv.
 # 조기 종료는 NITYMED Val(사람 라벨)의 창 macro F1이다. Test 창은 읽지 않는다.
 #
 # 실행: python -m sequence_model.train --tag v1 [--models cnn1d lstm] [--seeds 42 43 44]
@@ -15,9 +15,9 @@ import torch
 from torch import nn
 
 import config
-from sequence_model.build_windows import normalize
+from sequence_model.frames import normalize
 from eval.metrics import classification_metrics
-from sequence_model.models import MODEL_NAMES, build_model
+from sequence_model.models import MODEL_NAMES, TAIL_FRAMES, build_model
 
 DEVICE = "cuda"     # 학습은 GPU로만 한다
 # 증강 (--augment, train 배치에만). README "성능 개선 판정 기준"
@@ -102,7 +102,7 @@ def next_path(folder: Path, name: str) -> Path:
     return folder / f"{name}_v{max(versions, default=0) + 1:02d}.pt"
 
 
-def train_one(name: str, seed: int, data: dict, norm: dict, out_dir: Path, use_augment: bool = False) -> dict:
+def train_one(name: str, seed: int, data: dict, norm: dict, out_dir: Path, use_augment: bool = False, tail: int = TAIL_FRAMES) -> dict:
     torch.manual_seed(seed)
     np.random.seed(seed)
     gen = torch.Generator(device=DEVICE).manual_seed(seed)
@@ -111,7 +111,7 @@ def train_one(name: str, seed: int, data: dict, norm: dict, out_dir: Path, use_a
     (X_train, y_train), (X_val, y_val) = data["train"], data["val"]
     inputs, targets = torch.from_numpy(X_train).to(DEVICE), torch.from_numpy(y_train).long().to(DEVICE)
     val_inputs = torch.from_numpy(X_val).to(DEVICE)
-    model = build_model(name).to(DEVICE)
+    model = build_model(name, tail).to(DEVICE)
     loss_fn = nn.CrossEntropyLoss(weight=class_weights(y_train).to(DEVICE))
     optimizer = torch.optim.Adam(model.parameters(), lr=config.LR)
     n_batches = len(inputs) // config.BATCH_SIZE or 1
@@ -139,9 +139,9 @@ def train_one(name: str, seed: int, data: dict, norm: dict, out_dir: Path, use_a
     torch.save({"model": name, "state_dict": best["state_dict"], "norm": norm, "seed": seed, "epoch": best["epoch"],
                 "val_metrics": best["metrics"], "features": list(config.FEATURES), "classes": list(config.CLASSES),
                 "fps": config.FPS, "window_sec": config.WINDOW_SEC, "gpu": torch.cuda.get_device_name(0),
-                "peak_gpu_mb": torch.cuda.max_memory_allocated() / 1024 ** 2, "augment": use_augment}, path)
+                "peak_gpu_mb": torch.cuda.max_memory_allocated() / 1024 ** 2, "augment": use_augment, "tail": tail}, path)
     per_class = best["metrics"].get("f1_per_class", {})
-    return {"모델": name, "seed": seed, "weights": str(path), "augment": use_augment, "epoch": best["epoch"], "val_macro_f1": best["macro_f1"],
+    return {"모델": name, "seed": seed, "weights": str(path), "augment": use_augment, "tail": tail, "epoch": best["epoch"], "val_macro_f1": best["macro_f1"],
             **{f"val_F1_{config.CLASSES[int(c)]}": v for c, v in per_class.items()}, "초": round(time.perf_counter() - began, 1)}
 
 
@@ -151,7 +151,8 @@ def main() -> None:
     parser.add_argument("--models", nargs="+", default=list(MODEL_NAMES), choices=MODEL_NAMES)
     parser.add_argument("--seeds", type=int, nargs="+", default=list(config.SEEDS))
     parser.add_argument("--augment", action="store_true", help="train 배치에 증강을 쓴다 (눈·입 크기, 잡음, 미검출 흉내)")
-    parser.add_argument("--windows", type=Path, default=config.WINDOW_DIR, help="창 폴더 (build_windows --out)")
+    parser.add_argument("--windows", type=Path, default=config.WINDOW_DIR, help="창 폴더 (frames --out 또는 build_windows --out)")
+    parser.add_argument("--tail", type=int, default=TAIL_FRAMES, help="1D-CNN 끝 요약 프레임 수 (v9 실험, 기본 8은 v1~v8과 같음)")
     args = parser.parse_args()
     if not torch.cuda.is_available():
         raise SystemExit("GPU(CUDA)를 찾지 못했습니다. 학습은 GPU로만 합니다")
@@ -173,7 +174,7 @@ def main() -> None:
     rows = []
     for name in args.models:
         for seed in args.seeds:
-            rows.append(train_one(name, seed, data, norm, out_dir, args.augment))
+            rows.append(train_one(name, seed, data, norm, out_dir, args.augment, args.tail))
             pd.DataFrame(rows).to_csv(out_dir / "experiments.csv", index=False, encoding="utf-8-sig")
     print(pd.DataFrame(rows).to_string(index=False))
 
