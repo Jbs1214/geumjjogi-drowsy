@@ -1,6 +1,7 @@
 # 사람 라벨과 AI Hub 자동 라벨 → 클립당 라벨 JSON 1개 (기획서 9번 양식) + 분할 파일 data/split.csv.
 #   NITYMED (label_status reviewed): 재검수 segments, eye_check_segments.csv, 사람이 표시한 고개숙임(data/head_down)
 #   AI Hub 089 (label_status auto): 2차 자동 라벨의 정상·하품만. 합쳐진 눈감김·고개숙임은 불확실이다
+#   DMD는 dataset/dmd_convert.py가 만든다.
 # 라벨을 새로 판단하지 않고 사람이 정한 규칙대로 옮긴다. 프레임별 y와 창 정답은 build_windows.py가 계산한다.
 #
 # 실행: python -m dataset.convert_labels [--skip-aihub]
@@ -16,7 +17,6 @@ import pandas as pd
 
 import config
 from sequence_model.build_windows import frame_states
-from rule_based import config as rule_config
 from rule_based.common import runs
 
 CHECK_ORDER = ("눈감음", "고개숙임", "하품", "정상")      # 작업표 값이 여럿이면 앞의 것을 쓴다
@@ -204,85 +204,9 @@ def convert_aihub() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-DMD_RULES = (
-    "DMD 졸음 세트의 사람 라벨(OpenLABEL, DMD 제작진). 얼굴 카메라 프레임 번호 그대로 쓴다(sync frame_shift 0)",
-    "eye_closed: eyes_state/close 중 0.5초 이상만. 0.5초 미만(깜빡임)은 정상이다(사람 라벨 0.5초 기준, 사용자 결정 11.03). open, opening(기획서 7번), closing(사용자 결정 11.03)은 뜸이다",
-    "uncertain: eyes_state/undefined, Yawning with hand(손으로 가린 하품, 사용자 결정 11.03). yawn: Yawning without hand 중 입이 벌어진 프레임(MAR > 0.3)만, 0.5초 미만 끊김은 이음(최종 기획서 반영, v7부터)",
-    "head_down: DMD에 고개숙임 라벨이 없어 비운다",
-)
-DMD_CLOSED = "eyes_state/close"                # 학습 정답. closing·opening·open은 뜸
-DMD_MIN_SEC = 0.5                             # 이보다 짧은 close는 정상, 이보다 짧은 하품 끊김은 잇는다
-DMD_UNCERTAIN = "eyes_state/undefined"
-DMD_YAWN, DMD_HAND_YAWN = "yawning/Yawning without hand", "yawning/Yawning with hand"
-
-
-def dmd_masks(openlabel: dict, n: int, fps: float) -> dict[str, np.ndarray]:
-    """DMD OpenLABEL actions → 프레임별 채널 (n은 특징의 프레임 수). 규칙은 DMD_RULES."""
-    masks = {name: np.zeros(n, dtype=bool) for name in ("eye_closed", "yawn", "uncertain", "head_down", "hand")}
-    for action in openlabel["actions"].values():
-        kind = action["type"]
-        for interval in action.get("frame_intervals", []):
-            span = slice(max(int(interval["frame_start"]), 0), min(int(interval["frame_end"]) + 1, n))
-            if kind == DMD_CLOSED:
-                masks["eye_closed"][span] = True
-            elif kind == DMD_UNCERTAIN:
-                masks["uncertain"][span] = True
-            elif kind == DMD_YAWN:
-                masks["yawn"][span] = True
-            elif kind == DMD_HAND_YAWN:
-                masks["uncertain"][span] = True
-                masks["hand"][span] = True
-    for s, e in zip(*runs(masks["eye_closed"])):
-        if (e - s + 1) / fps < DMD_MIN_SEC:   # 깜빡임은 정상
-            masks["eye_closed"][s:e + 1] = False
-    return masks
-
-
-def trim_yawn(yawn: np.ndarray, mar: np.ndarray, fps: float) -> np.ndarray:
-    """하품 라벨 중 입이 벌어진 프레임(MAR > MAR_YAWN)만 남기고, 하품 안에서 DMD_MIN_SEC보다 짧게 끊긴 곳은 잇는다."""
-    out = yawn & (np.asarray(mar, dtype=float) > rule_config.MAR_YAWN)
-    starts, ends = runs(out)
-    for end, start in zip(ends[:-1], starts[1:]):
-        if (start - end - 1) / fps < DMD_MIN_SEC and yawn[end + 1:start].all():
-            out[end + 1:start] = True
-    return out
-
-
-def dmd_driver(clip: str) -> str:
-    match = re.match(r"(g[A-Z])_(\d+)_", clip)
-    if not match:
-        raise SystemExit(f"DMD 운전자를 알 수 없습니다: {clip}")
-    return f"dmd_{match[1]}_{match[2]}"
-
-
-def convert_dmd() -> pd.DataFrame:
-    """DMD 졸음 세트 → 라벨 JSON. 운전자 모두 train이다 (README "DMD 추가 학습")."""
-    rows = []
-    for video in sorted(config.DMD_VIDEO_DIR.rglob("*_rgb_face.mp4")):
-        clip = video.stem
-        ann = next(config.DMD_ANN_DIR.rglob(f"{clip.removesuffix('_rgb_face')}_rgb_ann_drowsiness.json"), None)
-        features = config.FEATURE_DIR / f"{clip}.parquet"
-        if ann is None or not features.exists():
-            raise SystemExit(f"DMD 라벨이나 특징이 없습니다: {clip}")
-        table = pd.read_parquet(features, columns=["t", "mar"])
-        t, mar = table["t"].to_numpy(), table["mar"].to_numpy()
-        fps = round(1 / float(np.median(np.diff(t))), 3)
-        openlabel = json.loads(ann.read_text(encoding="utf-8"))["openlabel"]
-        driver = dmd_driver(clip)
-        masks = dmd_masks(openlabel, len(t), fps)
-        masks["yawn"] = join_yawns(trim_yawn(masks["yawn"], mar, fps), masks["eye_closed"])
-        label = label_json(clip, "dmd", "reviewed", driver, fps, masks, DMD_RULES)
-        (config.LABEL_DIR / f"{clip}.json").write_text(json.dumps(label, ensure_ascii=False, indent=1), encoding="utf-8")
-        rows.append({"clip": clip, "source": "dmd", "driver_id": driver, "split": "train", "kind": "dmd"})
-    if not rows:
-        raise SystemExit(f"{config.DMD_VIDEO_DIR}에 DMD 얼굴 영상이 없습니다")
-    return pd.DataFrame(rows)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="라벨 JSON과 분할 파일을 만든다")
     parser.add_argument("--skip-aihub", action="store_true", help="AI Hub 변환을 건너뛴다 (이미 만들었을 때)")
-    parser.add_argument("--with-dmd", action="store_true", help="DMD 졸음 세트를 train에 더한다")
     parser.add_argument("--aihub-only", action="store_true", help="AI Hub만 변환한다. 고개숙임 표시가 끝나기 전에 미리 만들 때 쓴다")
     args = parser.parse_args()
 
@@ -297,7 +221,7 @@ def main() -> None:
         aihub = pd.read_csv(config.DATA / "split_aihub.csv", encoding="utf-8-sig")
     else:
         aihub = convert_aihub()
-    parts = [nitymed, aihub] + ([convert_dmd()] if args.with_dmd else [])
+    parts = [nitymed, aihub]
     split = pd.concat(parts, ignore_index=True)
     check_driver_split(split)
     split.to_csv(config.SPLIT, index=False, encoding="utf-8-sig")

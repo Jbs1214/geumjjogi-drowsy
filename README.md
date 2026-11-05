@@ -76,7 +76,7 @@
 - 원본 영상과 이전 라벨의 경로는 루트 `config.py`의 "입력" 부분에 있다. PC마다 바꾼다. 만든 특징·라벨·창은 `data/`, 가중치·채점 결과는 `runs/`에 쌓이며 둘 다 깃에 올리지 않는다.
 - 얼굴 랜드마크 모델 `models/face_landmarker.task`는 MediaPipe에서 받아 이 위치에 둔다(깃에 올리지 않음).
 - 라벨은 클립마다 JSON 1개다. 눈 감김(`eye_closed`)·고개 숙임(`head_down`)은 프레임 단위, 하품(`yawn`)은 0.5초 단위로 적는다. 겹치면 불확실 > 눈감김 > 고개숙임 > 하품 > 정상 순서로 정답을 정한다.
-- NITYMED는 사람이 검수한 라벨에 고개 숙임을 사람이 따로 표시한다. DMD는 `dataset/convert_labels.py`가 변환한다.
+- NITYMED는 사람이 검수한 라벨에 고개 숙임을 사람이 따로 표시한다. DMD는 `dataset/dmd_convert.py`가 변환한다.
 - 분할은 운전자 단위 파일 하나(`data/split.csv`)를 모든 실험이 같이 쓴다.
 - **공개용 데모 영상은 NITYMED나 자체 촬영 영상으로만 만든다**(DMD는 가공본 배포 금지).
 
@@ -105,7 +105,8 @@ python -m auto_label.extract
 python -m auto_label.head_review.server
 
 # 3. 라벨 JSON·운전자 단위 분할 → data/labels/, data/split.csv
-python -m dataset.convert_labels --with-dmd
+python -m dataset.convert_labels
+python -m dataset.dmd_convert --split train   # 새 DMD 클립만 변환, 기존 라벨은 덮어쓰지 않음
 
 # 4. 3초 창·정규화 값 (v7: NITYMED + DMD, 세션 기준 정규화) → data/windows_session/
 python -m sequence_model.build_windows --sources nitymed dmd --relative --out data/windows_session
@@ -138,7 +139,7 @@ python -m unittest discover -t . -s tests
 | 폴더 | 하는 일 | 주요 파일 |
 | --- | --- | --- |
 | (루트) | 설정값 한 곳 | `config.py`, `.streamlit/config.toml` |
-| `dataset/` | NITYMED·DMD 라벨 → 클립당 JSON, 운전자 단위 분할 | `convert_labels.py` |
+| `dataset/` | NITYMED·DMD 라벨 → 클립당 JSON, 운전자 단위 분할 | `convert_labels.py`, `dmd_convert.py`, `import_mini.py` |
 | `auto_label/` | 특징 추출, 사람 검수 도구(고개 숙임, 웹캠 정답) | `extract.py`, `head_review/`, `user_review/` |
 | `landmarks/` | 좌표 17개 번호, 특징 계산, 세션 기준 정규화 | `points.py`, `extract.py`, `features.py`, `session.py` |
 | `rule_based/` | 눈 감김 타이머, 하품·고개 숙임 규칙, 하품 5분 3회·판정 불가 경고, 운전 후 요약 | `alarm.py`, `alerts.py`, `eyes.py`, `yawn.py`, `head.py`, `config.py` |
@@ -181,6 +182,7 @@ python -m unittest discover -t . -s tests
 | 11.04 | 좌표 번호: `LEFT_EYE`를 362번 쪽으로(팀 코드와 같게), 얼굴 검출 신뢰도 0.3(`config.MIN_FACE_CONFIDENCE`) | v8 학습 창(김민영 특징 CSV)과 같은 입력. 362번 쪽이 블렌드셰이프 `blink_l`과 같은 눈 | 같은 클립에서 김민영 `ear_l`과 기존 `ear_r` 평균 차 0.002. 기존 `data/features`는 좌우가 반대라 v8 계열에 쓸 때 다시 뽑음 | 육주영 |
 | 11.04 | v8 1D-CNN: 김민영 창 묶음 `20261103_84e7bf4`(NITYMED 41클립, train 2,878·val 865 창, `norm.npz`), 세션 기준 정규화·DMD·AI Hub 없음. 창 제외는 끝 프레임 불확실·미검출, 불확실+미검출 30% 이상(임시 기준) | 기술서 v3 4.2: LSTM과 같은 창·분할·정규화 | Val macro F1 0.672 / 0.709 / 0.690(시드 42·43·44). 고개숙임은 train 16창이라 F1 0.45~0.52. 사건 평가는 김민영 평가 방식을 받은 뒤 | 육주영 |
 | 11.05 | 고개 숙임 기준을 `PITCH_DOWN` 15도에서 정면 pitch 대비 17.5도로 변경. 정면 pitch는 세션 시작 60초의 두 눈 EAR 0.2 이상 프레임 pitch 중앙값이고, 아직 없으면 절대 25도(`rule_based/head.py` `HeadDown`, 기술서 3.3) | 정면 pitch가 카메라마다 달라 절대 기준이 맞지 않음 | val 실시간 규칙 주의 재현율·시간당 오경보: NITYMED 0.595/56 → 0.595/48, DMD A 0.815/19.6 변화 없음, B 0.533/6.5 변화 없음. NITYMED 숙임 프레임 검출 val 0.632 → 0.589, train 0.438 → 0.365, 그 외 프레임 오탐 val 0.0057 → 0.0053, train 0.0150 → 0.0094 | 장범수 |
+| 11.05 | DMD 변환을 `dataset/dmd_convert.py`로 분리(기술서 5.4). `convert_labels.py`의 옛 규칙(close만, 손 하품=불확실, `reviewed`)과 `--with-dmd` 제거 | 코드가 기술서·라벨 `rules`와 달랐다 | 기존 8클립 재생성: 5클립 동일, 3클립은 `rules`의 사람 수동 수정 자리만 다름. gC_14 재추출 EAR 차이 최대 0.0013 | 장범수 |
 
 ### 팀 코드와 다른 점 (PR에서 정할 것)
 

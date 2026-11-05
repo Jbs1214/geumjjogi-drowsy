@@ -379,20 +379,34 @@ class HeadDownTest(unittest.TestCase):
 
 
 class DmdTest(unittest.TestCase):
-    def test_dmd_masks(self):
-        from dataset.convert_labels import dmd_driver, dmd_masks
-
+    @staticmethod
+    def openlabel():
         def act(kind, *spans):
             return {"type": kind, "frame_intervals": [{"frame_start": s, "frame_end": e} for s, e in spans]}
-        ol = {"actions": {"0": act("eyes_state/close", (10, 19), (30, 33)), "1": act("eyes_state/closing", (5, 9)),
-                          "2": act("eyes_state/opening", (20, 24)), "3": act("eyes_state/undefined", (40, 44)),
-                          "4": act("yawning/Yawning with hand", (60, 79)), "5": act("yawning/Yawning without hand", (90, 120))}}
-        m = dmd_masks(ol, 100, 10.0)
-        self.assertEqual(np.flatnonzero(m["eye_closed"]).tolist(), list(range(10, 20)))     # closing·opening은 뜸, 0.4초 감음은 정상
-        self.assertEqual(np.flatnonzero(m["uncertain"]).tolist(), list(range(40, 45)) + list(range(60, 80)))   # 손 하품은 불확실
-        self.assertTrue(m["hand"][60:80].all() and not m["yawn"][60:80].any())
-        self.assertTrue(m["yawn"][90:100].all() and not m["head_down"].any())
-        self.assertEqual(dmd_driver("gB_10_s5_2019-03-12T10;35;20+01;00_rgb_face"), "dmd_gB_10")
+        return {"actions": {"0": act("eyes_state/close", (10, 19), (30, 33)), "1": act("eyes_state/closing", (5, 9)),
+                            "2": act("eyes_state/opening", (20, 24)), "3": act("eyes_state/undefined", (40, 44)),
+                            "4": act("blinks/blinking", (50, 52)),
+                            "5": act("yawning/Yawning with hand", (60, 74)), "6": act("yawning/Yawning without hand", (75, 89), (93, 120))},
+                "objects": {"0": {"type": "driver", "object_data": {"boolean": [{"name": "glasses", "val": True}]}}},
+                "contexts": {"0": {"context_data": {"text": [{"name": "weather", "val": "Sunny"}]}}}}
+
+    def test_convert(self):
+        from dataset.dmd_convert import convert
+        label = convert("gB_10_s5_2019-03-13T14;17;28+01;00", self.openlabel(), 100, 10.0)
+        self.assertEqual(label["eye_closed"], [[0.5, 2.0], [3.0, 3.4]])     # closing은 감음, opening·blinks는 안 넣고 맞닿으면 잇는다
+        self.assertEqual(label["uncertain"], [[4.0, 4.5]])
+        self.assertEqual(label["yawn"], [{"start": 6.0, "end": 9.0, "hand": True}, {"start": 9.5, "end": 10.0, "hand": False}])
+        self.assertEqual((label["driver_id"], label["label_status"], label["head_down"]), ("10", "auto", []))
+        self.assertEqual(label["conditions"], {"glasses": True, "lighting": "Sunny"})
+
+    def test_basis_b(self):
+        from dataset.dmd_convert import basis_b, convert
+        label = convert("gB_10_s5_2019-03-13T14;17;28+01;00", self.openlabel(), 100, 10.0)
+        label["eye_closed"] = [[0.5, 1.0]]                                  # 사람이 고친 값은 B에도 그대로 남는다
+        out = basis_b(label, self.openlabel())
+        self.assertEqual(out["eye_closed"], [[0.5, 1.0], [2.0, 2.5]])       # opening 20~24프레임만 더해진다
+        self.assertEqual(len(out["rules"]), len(label["rules"]) + 1)
+        self.assertEqual(out["uncertain"], label["uncertain"])
 
 
 class SpecFTest(unittest.TestCase):
@@ -531,15 +545,6 @@ class SpecFTest(unittest.TestCase):
         self.assertEqual(int(timer_stages(t, closed, unknown=unknown)[-1]), 2)
         self.assertEqual(int(timer_stages(t, closed, unknown=unknown, carry_max_sec=1.0)[-1]), 0)       # 1초 넘게 이어받으면 다시 잰다
         self.assertEqual(int(timer_stages(t, closed, unknown=unknown, carry_max_sec=3.0)[40]), 1)       # 상한 안에서는 이어서 센다
-
-    def test_dmd_yawn_trim(self):
-        from dataset.convert_labels import trim_yawn
-        yawn = np.zeros(100, bool)
-        yawn[10:90] = True
-        mar = np.full(100, 0.1)
-        mar[30:50], mar[55:70] = 0.6, 0.6                 # 입 벌림 두 번, 사이 5프레임(0.2초) 끊김
-        out = trim_yawn(yawn, mar, 25.0)
-        self.assertEqual(np.flatnonzero(out).tolist(), list(range(30, 70)))
 
     def test_yawn_tracker_and_alerts(self):
         from rule_based.alerts import UnknownWatch, YawnRepeat, YawnTracker

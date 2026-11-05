@@ -24,6 +24,12 @@ WEBCAM_DIR = Path(r"C:\Users\Woori\Videos\drowsy_webcam")  # 판정 화면을 �
 RECORD_FPS = 30.0                                          # 녹화·변환 영상의 일정한 FPS (demo/cfr.py)
 DMD_ARCHIVES = Path(r"C:\Users\Woori\Downloads\DMD")      # DMD 졸음 세트 압축 7개 (원본, 고치지 않는다)
 
+# 미니 데이터 묶음 (dataset/import_mini.py). 읽기만 한다
+MINI_DATA = Path(r"C:\Users\Woori\Desktop\datas\mini-data")
+MINI_NITYMED_LABELS = MINI_DATA / "nitymed" / "labels" / "nitymed_labels_20261103"
+MINI_BUNDLE = MINI_DATA / "dmd" / "labels" / "20261103_84e7bf4"     # DMD labels_v2·특징, NITYMED 특징
+MINI_DMD_VAL_DRIVERS = 2                # DMD 운전자 6명 중 val 수. 나머지는 train, DMD test는 신규 7명 몫으로 남긴다
+
 # 산출물
 DATA = ROOT / "data"
 FEATURE_DIR = DATA / "features"         # 영상별 특징 parquet (원본 FPS)
@@ -36,7 +42,6 @@ TEST2_LABEL_DIR = DATA / "test2_labels"     # Test2 영상에 사람이 표시�
 TEST2_LABEL_DRAFT_DIR = DATA / "test2_labels_drafts"
 WEBCAM_LABEL_DIR = DATA / "webcam_labels"   # Val2 웹캠 녹화에 사람이 표시한 상태 구간
 WEBCAM_LABEL_DRAFT_DIR = DATA / "webcam_labels_drafts"
-DMD_VIDEO_DIR = DATA / "dmd_raw"        # 압축에서 꺼낸 DMD 얼굴 영상 (rgb_face.mp4만)
 DMD_ANN_DIR = DATA / "dmd_ann"          # 압축에서 꺼낸 DMD 라벨 JSON
 LABEL_DIR = DATA / "labels"             # 클립당 라벨 JSON 1개 (기획서 9번 양식)
 SPLIT = DATA / "split.csv"              # 운전자 단위 분할. 모든 실험이 같이 쓴다
