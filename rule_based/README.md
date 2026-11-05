@@ -27,6 +27,7 @@
 | `CAUTION_SEC` / `DROWSY_SEC` | 1.5 / 3.0 | 기획서 3-4. 연속 눈 감김 주의 / 졸음 |
 | `BEST_PARAMS_PATH` / `EAR_BASE_PERCENTILE` | `auto_label/best_params.json` / 75 | 타이머 입력의 임계값 = `ear_ratio` × 클립 EAR P75. 파일이 없으면 `EAR_CLOSED` |
 | `PROB_ON` / `PROB_OFF` | 0.6 / 0.4 | 기획서 3-3. 모델 확률 히스테리시스 |
+| `BEST_PARAMS_PATH` / `EAR_BASE_PERCENTILE` | `auto_label/best_params.json` / 75 | 눈 감음 임계값 = `ear_ratio`(0.6) × 평소 EAR |
 | `MAR_YAWN` | 0.3 | 하품 영상: 하품 최고 0.47~0.50, 입 다묾 최고 0.06 |
 | `YAWN_MIN_SEC` | 1.0 | 짧은 입 벌림과 구분. 하품 길이 1.47~2.17초 |
 | `PITCH_DOWN_RELATIVE` / `PITCH_DOWN_ABSOLUTE` | 17.5 / 25.0 | 기술서 3.3. 정면 pitch 대비 기준, 정면 pitch가 아직 없을 때의 기준 |

@@ -3,6 +3,7 @@
 # 실행: python -m rule_based.eyes <landmarks.extract CSV>
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +17,11 @@ from rule_based.common import runs, under
 def is_closed(ear: np.ndarray) -> np.ndarray:
     """프레임별 ear → 눈 감음 여부(bool). 얼굴 미검출(NaN)은 감지 못 한 것이므로 False."""
     return under(ear, config.EAR_CLOSED)
+
+
+def best_ear_ratio() -> float:
+    """best_params.json의 ear_ratio. 눈 감음 임계값은 이 값 × 평소 EAR이다 (기술서 3.1)."""
+    return float(json.loads(config.BEST_PARAMS_PATH.read_text(encoding="utf-8"))["params"]["ear_ratio"])
 
 
 def closed_runs(t: np.ndarray, closed: np.ndarray) -> list[tuple[float, float]]:

@@ -1,7 +1,11 @@
 # 규칙 기반 판정에서 쓰는 임계값과 설정. 코드에는 값을 직접 쓰지 않고 여기서 가져다 쓴다.
 # 값을 바꾸면 이유와 결과를 README 실험 기록 표에 남긴다.
 
-EAR_CLOSED = 0.2        # ear가 이보다 작으면 눈 감음. 검증: 감음 0.04, 뜬 상태 최저 0.25 (고개 들 때)
+from pathlib import Path
+
+BEST_PARAMS_PATH = Path(__file__).resolve().parent.parent / "auto_label" / "best_params.json"   # calibrate가 찾은 임계값. 기술서 3.1
+EAR_BASE_PERCENTILE = 75  # 평소 EAR 분위. 눈 감음 임계값 = best_params의 ear_ratio × 평소 EAR
+EAR_CLOSED = 0.2        # ear가 이보다 작으면 눈 감음(MVP 고정 기준). 검증: 감음 0.04, 뜬 상태 최저 0.25 (고개 들 때)
 WARN_SEC = 1.5          # 눈 감음이 이 시간(초) 이상 이어지면 주의. 기획서 3-4의 시작값
 ALERT_SEC = 3.0         # 눈 감음이 이 시간(초) 이상 이어지면 졸음 경고. 기획서 3-4
 CARRY_MIN_SEC = 0.5     # 판정 불가(눈이 안 보임)가 되기 전에 이만큼 감고 있었으면 타이머를 이어받는다. 수정 기획서 F 5-1

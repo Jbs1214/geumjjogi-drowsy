@@ -132,7 +132,7 @@ def main() -> None:
     def show(snap: dict, draw_charts: bool) -> None:
         with area.container():
             items = (("모델 판정", snap["state"]), ("최종 경고" if snap["final"] else "모델 경고", snap["stage"]), ("연속 눈 감김", f"{snap['closed_sec']:.1f}초"),
-                     ("규칙 경고 (EAR 0.48)", snap["rule_stage"]), ("처리 속도", f"{snap['rate']:.1f} FPS"), ("운전 시간", f"{snap['seconds'] / 60:.1f}분"))
+                     ("규칙 경고", snap["rule_stage"]), ("처리 속도", f"{snap['rate']:.1f} FPS"), ("운전 시간", f"{snap['seconds'] / 60:.1f}분"))
             for i in range(0, len(items), 2):
                 for column, (name, value) in zip(st.columns(2), items[i:i + 2]):
                     column.metric(name, value)

@@ -92,7 +92,7 @@ def panel(state: int, stage: int, seconds: float, rule_stage: int, ear: float, m
     draw.text((x, y + round(8 * scale)), f"눈 감은 시간 {seconds:.1f}초", font=small, fill="white")
     badge(y, STAGE_NAMES[stage], STAGE_RGB[stage])
     y += round(52 * scale)
-    draw.text((x, y + round(8 * scale)), f"규칙 경고 (EAR {0.48})", font=small, fill=(210, 210, 210))
+    draw.text((x, y + round(8 * scale)), "규칙 경고", font=small, fill=(210, 210, 210))
     badge(y, STAGE_NAMES[rule_stage], STAGE_RGB[rule_stage])
     y += round(56 * scale)
     text = "얼굴 미검출" if np.isnan(ear) else f"현재 EAR {ear:.3f}   MAR {mar:.3f}"
@@ -206,7 +206,7 @@ def main() -> None:
     print(f"저장: {out}, {result['frames']}프레임, 후처리 {post.label()}, 하품 전용 {args.yawn_weights if yawn_predictor else '없음(4클래스 판정)'}")
     for name, starts in result["starts"].items():
         print(f"  모델 {name} 시작 시각: {starts}")
-    print(f"  {'최종' if yawn_predictor else '모델'} 졸음 경고: {result['drowsy']}, 규칙 EAR 0.48 졸음 경고: {result['rule_drowsy']}")
+    print(f"  {'최종' if yawn_predictor else '모델'} 졸음 경고: {result['drowsy']}, 규칙 졸음 경고: {result['rule_drowsy']}")
 
 
 if __name__ == "__main__":

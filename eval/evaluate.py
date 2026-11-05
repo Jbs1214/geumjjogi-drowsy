@@ -21,14 +21,15 @@ from sequence_model.models import Predictor
 from sequence_model.postprocess import CANDIDATES, NONE, Post, bridge, decide, drop_short, shown_yawn
 from rule_based.alarm import DROWSY, WARN, stage_starts, timer_stages
 from rule_based.common import runs
-from rule_based.eyes import is_closed
+from rule_based.config import EAR_BASE_PERCENTILE
+from rule_based.eyes import best_ear_ratio, is_closed
 from rule_based.head import is_down
 from rule_based.yawn import yawning
 
-EAR_RATIO = 0.48
-BASELINE_EAR_QUANTILE = 0.9
-MIN_CLOSE_SEC, MAX_GAP_SEC = 0.1, 0.2     # EAR 0.48 규칙의 짧은 끊김 잇기와 짧은 구간 지우기 (이전 폴더 interim_label과 같다)
-EYE_RULES = ("MVP 규칙 (EAR 0.2)", "규칙 EAR 0.48")
+EAR_RATIO = best_ear_ratio()
+BASELINE_EAR_QUANTILE = EAR_BASE_PERCENTILE / 100
+MIN_CLOSE_SEC, MAX_GAP_SEC = 0.1, 0.2     # 평소 EAR 비율 규칙의 짧은 끊김 잇기와 짧은 구간 지우기 (이전 폴더 interim_label과 같다)
+EYE_RULES = ("MVP 규칙 (EAR 0.2)", f"규칙 EAR {EAR_RATIO:g}")
 YAWN_RULE, HEAD_RULE = "하품 규칙 (MAR)", "고개숙임 규칙 (pitch)"
 TARGETS = {"눈감김": config.CLOSED, "하품": config.YAWN, "고개숙임": config.HEAD}
 SIMPLER = "cnn1d"
@@ -36,7 +37,7 @@ BOOTSTRAPS, SEED = 2000, 42
 
 
 def ear48_closed(df: pd.DataFrame, fps: float) -> np.ndarray:
-    """EAR이 클립의 평소 값(90% 분위)의 48% 미만인 프레임. 0.2초 미만 끊김은 잇고 0.1초 미만 구간은 지운다."""
+    """EAR이 클립의 평소 값(best_params의 ear_ratio × EAR_BASE_PERCENTILE 분위) 미만인 프레임. 0.2초 미만 끊김은 잇고 0.1초 미만 구간은 지운다."""
     found = df["face_found"].to_numpy(dtype=bool)
     if not found.any():
         return np.zeros(len(df), dtype=bool)

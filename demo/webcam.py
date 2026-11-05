@@ -3,7 +3,7 @@
 #
 # 모델 입력은 파일 평가(eval.evaluate.model_frames)와 같다: 15 FPS 격자마다 가장 가까운 프레임을 골라 3초(45칸) 창을 만든다.
 # 격자 시각 g는 g 뒤의 프레임이 들어온 순간 정해진다(지연은 프레임 하나 이하).
-# 규칙 EAR 0.48은 파일 평가와 달리 지금까지 들어온 검출 프레임의 90% 분위를 평소 값으로 쓴다(미래를 모르기 때문이다).
+# 규칙은 파일 평가와 달리 지금까지 들어온 검출 프레임의 분위를 평소 EAR로 쓴다(미래를 모르기 때문이다).
 #
 # 실행: python -m demo.webcam [--camera 0] [--weights runs/v1/cnn1d_v01.pt] [--mute] [--record webcam|test2]
 #       python -m demo.webcam --input 영상.mp4 --no-window      화면 없이 파일 판정과 같은지 확인한다
@@ -157,7 +157,7 @@ class LiveJudge:
 
 
 class LiveRule:
-    """규칙 EAR 0.48. 평소 EAR은 지금까지 들어온 검출 프레임의 90% 분위다."""
+    """규칙: best_params의 ear_ratio × 평소 EAR. 평소 EAR은 지금까지 들어온 검출 프레임의 분위다."""
 
     def __init__(self, events: list[Event] | None = None) -> None:
         self._events = events           # 최종 구성이면 규칙의 주의·졸음을 이 목록에 남긴다
@@ -395,7 +395,7 @@ def main() -> None:
           f"15 FPS 격자 {result['ticks']}칸 중 판정 {result['judged']:.1%}")
     for name, found in result["starts"].items():
         print(f"  모델 {name} 시작 시각: {found}")
-    print(f"  모델 졸음 경고: {result['drowsy']}, 규칙 EAR 0.48 졸음 경고: {result['rule_drowsy']}")
+    print(f"  모델 졸음 경고: {result['drowsy']}, 규칙 졸음 경고: {result['rule_drowsy']}")
     print(result["summary"])
 
 

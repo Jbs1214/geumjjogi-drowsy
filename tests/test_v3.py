@@ -514,6 +514,16 @@ class BaselineTest(unittest.TestCase):
             self.assertTrue((proba.argmax(axis=1) == y).all())
 
 
+class BestParamsTest(unittest.TestCase):
+    def test_rule_uses_best_params(self):
+        import json
+        from eval.evaluate import BASELINE_EAR_QUANTILE, EAR_RATIO
+        from rule_based.config import BEST_PARAMS_PATH
+        saved = json.loads(BEST_PARAMS_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(EAR_RATIO, saved["params"]["ear_ratio"])
+        self.assertEqual(BASELINE_EAR_QUANTILE, 0.75)
+
+
 class DmdTest(unittest.TestCase):
     @staticmethod
     def openlabel():
