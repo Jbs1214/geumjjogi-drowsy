@@ -38,7 +38,7 @@ Read the relevant file directly when needed. If it disagrees with this file, fol
 
 ## Run order
 
-`auto_label.extract` → `auto_label.head_review.server` (human review) → `dataset.convert_labels` → `sequence_model.build_windows` → `sequence_model.train` → `eval.evaluate` → `eval.report` → `demo/`
+`auto_label.extract` → `auto_label.head_review.server` (human review) → `dataset.convert_labels`, `dataset.dmd_convert` → `sequence_model.build_windows` → `sequence_model.train`, `sequence_model.train_yawn` → `eval.evaluate`, `eval.yawn_compare` → `eval.report` → `demo/`
 
 - Run commands from the repo root as `python -m <folder>.<file>`. Tests: `python -m unittest discover -t . -s tests`  
 - Priority: ① rule-based MVP → ② 1D-CNN/LSTM comparison → ③ (optional) ONNX. Do not build sequence models before the MVP.
