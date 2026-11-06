@@ -27,9 +27,9 @@ def events_frame(events: list) -> pd.DataFrame:
     return pd.DataFrame({"시각": [round(e.t, 1) for e in events], "이벤트": [e.kind for e in events]})
 
 
-def closure_chart(frame: pd.DataFrame, duration: float) -> alt.LayerChart:
-    """연속 눈 감김 시간 선 + 기준선 2개 + 가까운 시각에 세로선과 툴팁."""
-    x = alt.X("시각:Q", title="시작 후 초", scale=alt.Scale(domain=[0, max(duration, 10.0)]))
+def closure_chart(frame: pd.DataFrame, duration: float, start: float = 0.0) -> alt.LayerChart:
+    """연속 눈 감김 시간 선 + 기준선 2개 + 가까운 시각에 세로선과 툴팁. start부터 duration까지 그린다(실시간은 최근 구간만)."""
+    x = alt.X("시각:Q", title="시작 후 초", scale=alt.Scale(domain=[start, max(duration, start + 10.0)]))
     top = max(4.0, float(frame["연속 눈 감김"].max()) + 0.5 if len(frame) else 4.0)
     y = alt.Y("연속 눈 감김:Q", title="연속 눈 감김 (초)", scale=alt.Scale(domain=[0, top]))
     line = alt.Chart(frame).mark_line(color=LINE, strokeWidth=2, interpolate="step-after").encode(x=x, y=y)

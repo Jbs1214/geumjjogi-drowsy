@@ -19,10 +19,10 @@ STATE_NAMES = {"하품": "하품 감지", "고개숙임": "고개 숙임", "눈�
 
 
 def live_frames(snap: dict) -> pd.DataFrame:
-    """LiveSession.snapshot() → 실시간 그래프용 판정 기록 표. 시각은 운전 시작 후 초다."""
+    """LiveSession.snapshot() → 실시간 그래프용 판정 기록 표. 기록은 최근 구간만 오고, 시각은 운전 시작(snap["t0"]) 후 초다."""
     timeline = timeline_frame(snap["history"], step=1)
     if len(timeline):
-        timeline["시각"] = (timeline["시각"] - timeline["시각"].iloc[0]).round(2)
+        timeline["시각"] = (timeline["시각"] - snap.get("t0", timeline["시각"].iloc[0])).round(2)
     return timeline
 
 

@@ -9,6 +9,7 @@ import os
 import sys
 import threading
 import time
+from bisect import bisect_left
 from datetime import datetime
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from rule_based.alerts import Event, MouthClosedWatch, YawnTracker, summary_mark
 
 REFRESH_SEC = 0.1            # 계기판을 다시 그리는 간격(초). 길면 계기판이 영상보다 늦어 보인다
 CHART_SEC = 2.0             # 실시간 그래프를 다시 그리는 간격(초). 깜빡임을 줄이려고 계기판보다 드물게 그린다
+LIVE_CHART_SEC = 300.0      # 실시간 그래프에 보여 줄 최근 구간(초). 긴 운전에서 2초마다 전체 기록을 다시 그리지 않게 한다
 LOCAL_ONLY = {"iceServers": []}     # 같은 PC 안에서만 연결한다
 CONSTRAINTS = {"video": {"width": 640, "height": 480, "frameRate": {"ideal": 30}}, "audio": False}
 STAGE_NAMES = ("정상", "주의", "졸음")
@@ -128,15 +130,19 @@ class LiveSession:
         rate = (len(self.stamps) - 1) / (self.stamps[-1] - self.stamps[0]) if len(self.stamps) > 1 else 0.0
         now = j.history[-1][0] if j.history else 0.0
         stage = alarm_stage(j, r)
-        records = []
+        records, t0 = [], 0.0
         if history:
-            records = [(t, -1, s, -1, closed) for t, s, closed in r.history] if j.final else list(j.history)
+            # 실시간 그래프는 최근 LIVE_CHART_SEC만 복사한다. 운전 후 리포트는 판정 로그(self.log) 전체를 쓴다
+            source = r.history if j.final else j.history
+            t0 = source[0][0] if source else 0.0
+            recent = source[bisect_left(source, source[-1][0] - LIVE_CHART_SEC, key=lambda h: h[0]):] if source else []
+            records = [(t, -1, s, -1, closed) for t, s, closed in recent] if j.final else list(recent)
         model_state = config.CLASSES[j.shown] if j.shown >= 0 else ("판정 불가" if j.history else "준비 중")
         return {"state": current_state(j, r), "model_state": model_state, "stage": STAGE_NAMES[stage],
                 "stage_index": stage, "yawn_alert": j.yawn_repeat.active(now), "check_alert": check_active(j, r),
                 "ear": self.ear, "mar": self.mar, "final": j.final,
                 "closed_sec": r.closed_sec if j.final else j.closed_sec, "rate": rate,
-                "events": list(j.events) if history else [], "history": records,
+                "events": list(j.events) if history else [], "history": records, "t0": t0,
                 "seconds": j.history[-1][0] - j.history[0][0] if j.history else 0.0}
 
     def snapshot(self, history: bool = True) -> dict:
@@ -182,11 +188,11 @@ def drive_page() -> None:
     from demo.report import live_frames, show_report
     from demo.webcam import default_weights
 
-    @st.cache_resource(show_spinner="모델과 얼굴 인식기를 불러오는 중입니다")
-    def load(path: str) -> LiveSession:
-        return LiveSession(Path(path))
-
-    session = load(str(default_weights()))
+    # 브라우저 탭마다 자기 판정 상태를 쓴다. 서버 전체에서 하나를 나눠 쓰면 탭 두 개의 프레임과 로그가 섞인다
+    if "drowsy_session" not in st.session_state:
+        with st.spinner("모델과 얼굴 인식기를 불러오는 중입니다"):
+            st.session_state["drowsy_session"] = LiveSession(default_weights())
+    session = st.session_state["drowsy_session"]
     if st.sidebar.button("새 운전 시작", help="지금까지의 판정 기록을 지우고 처음부터 잽니다", use_container_width=True):
         session.reset()
     session.set_mask(st.sidebar.checkbox("마스크 착용 (하품 감지 끄기)", value=session.mask))
@@ -235,7 +241,8 @@ def drive_page() -> None:
         if draw_chart and snap["history"]:
             chart_at = now
             timeline = live_frames(snap)
-            chart.altair_chart(closure_chart(timeline.iloc[::config.JUDGE_EVERY], timeline["시각"].iloc[-1]), use_container_width=True)
+            chart.altair_chart(closure_chart(timeline.iloc[::config.JUDGE_EVERY], timeline["시각"].iloc[-1], timeline["시각"].iloc[0]),
+                               use_container_width=True)
         time.sleep(REFRESH_SEC)
     alarm.empty()
     idle()
