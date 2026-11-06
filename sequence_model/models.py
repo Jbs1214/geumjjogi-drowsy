@@ -47,7 +47,7 @@ class Predictor:
     """가중치 파일 → 창 (N, 45, 11, 정규화 전) 클래스 확률. 평균·표준편차는 가중치에 함께 저장돼 있다."""
 
     def __init__(self, path, device: str = "cpu") -> None:
-        saved = torch.load(path, map_location=device, weights_only=False)
+        saved = torch.load(path, map_location=device, weights_only=True)     # 텐서·숫자·문자·list·dict만 연다 (CWE-502)
         self.name, self.norm, self.device = saved["model"], saved["norm"], device
         self.relative = bool(self.norm.get("relative", False))     # 세션 기준 특징으로 학습한 가중치인지 (session.py, v7부터)
         self.model = build_model(saved["model"]).to(device)
