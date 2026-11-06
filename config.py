@@ -75,6 +75,8 @@ YAWN_STEP = 0.5                         # 하품 경계 단위(초, 기획서 �
 YAWN_SELECT_THRESHOLD = 0.5             # 하품 전용 모델의 최고 epoch를 고를 때 쓰는 창 F1 기준 확률
 YAWN_ENTER = 0.6                        # 하품 전용 모델 켜짐 기준. README "하품 전용 모델 비교 기준"
 YAWN_MODEL_MIN_SEC = 0.4                # 이보다 짧은 하품 전용 모델 검출은 하품으로 보지 않는다
+GAUGE_MAX_SEC = 4.0                     # Streamlit 계기판 게이지 눈금 끝(초, rule_based ALERT_SEC + 1). 화면 표시용이고 판정 기준이 아니다
+SUMMARY_BUCKET_SEC = 300.0              # 운전 후 요약에서 이벤트 수를 묶는 구간(초). 기술서 6.3: 5분
 
 # 입력 특징 11개 (기획서 5번, 사람이 11개로 확정)
 FACE_COLUMN = "face"
