@@ -232,7 +232,7 @@ python -m unittest discover -t . -s tests
 | 11.05 | 분할과 파이프라인 기준 확정: `feat/seq-pipeline` 구조에 `main` 병합. 김민영 평가를 `eval/window_eval.py`로 옮기고 `train_lstm`·`share_lstm`을 이 구조에 연결. DMD 분할은 train 11명·val 2명 유지(기술서 2.6) | 기술서의 폴더 구조·`data/split.csv`가 `feat/seq-pipeline`과 같음. DMD는 학습에 쓰는 전제이고 손 가린 하품 정답이 DMD에만 있음 | `tests` 59개, `eval.tests.test_evaluate` 55개, `test_train_lstm`·`test_share_lstm` 59개 통과. `train_lstm`의 LSTM은 평균 하나만 쓰는 구조라 `models.LSTMClassifier`와 가중치가 호환되지 않아 파일 안에 둠 | 장범수 |
 | 11.05 | `ear_ratio` 0.6 유지. DMD 합본 A 기준 교차 확인(`runs/calib_dmd_1105`, 육주영 PC): 운전자가 겹치지 않는 기존 8클립·신규 8클립에서 찾아 서로 채점 | 기술서 5.5의 재보정 여부 판단 | 찾은 값 0.70·0.61, 전체 0.70. 신규 8: 0.70 F1 0.944·3초 재현율 0.875·오경보 9.8, 0.60 0.946·0.750·4.9. 기존 8: 0.61 0.940·0.500·4.8, 0.60 0.937·0.400·4.8. F1은 0.60~0.75에서 거의 같고 올리면 오경보가 늘어 유지 | 육주영, 장범수 |
 | 11.05 | DMD 합본 라벨 반영(Drive `DMD/합본 라벨`, gB_10 10;35 하품 시작 127.037초, gZ_37 눈 감김 122.547~122.782초 삭제), `data/windows_merged`, 재학습 `yawn2`·`sig5`. 최종 구성 가중치를 `yawn2`로 변경 | 사람이 영상으로 확인한 수정을 반영 | 16개 파일 크기가 Drive와 같음. 창 11,944개, 입력·정규화 값 같음, 정답은 train 2창만 달라짐. 인정 1초 `yawn2` 1D-CNN 0.6: 손 가림 0.48, 맨입 NITYMED 0.89·DMD 1.00, 오탐 16·6.5회/시간. `sig5` 4클래스 1D-CNN 손 가림 0.33. `yawn1` 대비 손 가림 0.52→0.48은 7건·시드 3개에서 나온 차이라 판단하지 않음 | 장범수 |
-| 11.06 | 코드 리뷰 3-1·3-3 반영(김민영 회신): 실시간 규칙 `RULE_MIN_SEC`(5초)·`BASELINE_EVERY_SEC`(0.5초)를 `demo/webcam.py`에서 `rule_based/config.py`로 옮김, `eval/window_eval.py`는 `eval/metrics.py`의 `LABEL_TOLERANCE_SEC`를 씀. 판정 로그의 판정 불가 이벤트는 얼굴이 `UNKNOWN_EVENT_GAP_SEC`(1초) 이상 보였다가 사라질 때만 새로 셈(기술서 6.2) | CLAUDE.md "수치는 설정 파일에". 얼굴이 깜빡이면 같은 장면이 여러 번 기록됨(11.06 웹캠 테스트 2.5초에 6번) | 값은 모두 그대로라 판정 결과 변화 없음. 레포 전체 테스트 203개 통과(판정 불가 묶기 테스트 3개 추가). 경고·리포트 화면은 바뀌지 않고 로그 파일만 해당 | 육주영 |
+| 11.06 | 코드 리뷰 3-1·3-3 반영(김민영 회신): 실시간 규칙 `RULE_MIN_SEC`(5초)·`BASELINE_EVERY_SEC`(0.5초)를 `demo/webcam.py`에서 `rule_based/config.py`로 옮김, `eval/window_eval.py`는 `eval/metrics.py`의 `LABEL_TOLERANCE_SEC`를 씀. 판정 로그의 판정 불가 이벤트는 얼굴이 `UNKNOWN_EVENT_GAP_SEC`(1초) 이상 보였다가 사라질 때만 새로 셈(기술서 6.2에는 기준이 없어 아래 "갱신 안건"에 올림) | CLAUDE.md "수치는 설정 파일에". 얼굴이 깜빡이면 같은 장면이 여러 번 기록됨(11.06 웹캠 테스트 2.5초에 6번) | 값은 모두 그대로라 판정 결과 변화 없음. 레포 전체 테스트 203개 통과(판정 불가 묶기 테스트 3개 추가). 경고·리포트 화면은 바뀌지 않고 로그 파일만 해당 | 육주영 |
 
 ### 팀 코드와 다른 점 (PR에서 정할 것)
 
@@ -242,6 +242,16 @@ python -m unittest discover -t . -s tests
 - **특징 열:** v3 `landmarks/features.py`는 `ear_l`·`ear_r`·`ear`·`mar`를 더하고, 고개 각도·blendshape는 `landmarks/extract.py`가, `face`는 `build_windows.feature_matrix()`가 만든다. 입력 순서는 `config.FEATURES`(11개)다.
 - **단계 이름:** v3 `rule_based/alarm.py`에는 `CAUTION`이 없고 `WARN`·`DROWSY`를 쓴다.
 - **창 제외 사유:** v3 `build_windows.py`에는 `EXCLUDE_END_MISSING` 같은 제외 사유 상수가 없다.
+
+### 기획서·기술서와 다른 점 (갱신 안건)
+
+기획서(`docs/plan.md`)와 기술서(`docs/spec.md`)는 팀 합의로만 고친다. 코드와 어긋난 곳은 여기에 올리고, 문서를 고칠지 코드를 맞출지 팀이 정한다.
+
+| 날짜 | 기술서 위치 | 기술서 내용 | 코드 | 제안 | 상태 |
+|---|---|---|---|---|---|
+| 11.06 | 6.2 판정 로그 "이벤트" | 판정 불가를 이벤트로 남긴다(묶는 기준 없음) | 얼굴이 `UNKNOWN_EVENT_GAP_SEC`(1초) 이상 보였다가 사라질 때만 새로 셈(`demo/streamlit_app.py` `UnknownStarts`) | 6.2에 묶는 기준 한 줄 추가 | 김민영 동의(3-3), 팀장 확인 대기 |
+| 11.06 | 9장 구현 상태 | 판정 로그의 `wall_time`·클래스 확률 기록은 코드에 없다 | PR #17부터 Streamlit 데모가 기록 | 9장 문장 정정 | 팀장 확인 대기 |
+| 11.06 | 0장·2.5 제외 마스크 | 얼굴 미검출이거나 창 안 불확실 30% 이상이면 창 제외 | 미검출은 `> MAX_MISSING`(0.3) 초과로 제외(45프레임 창이라 비율이 정확히 0.3일 수 없어 결과는 같음). 창 안 불확실 비율은 보지 않고 끝 프레임이 불확실일 때만 제외(`sequence_model/build_windows.py`) | 코드를 기술서에 맞추면 학습 창이 바뀌어 sig5·yawn2 재학습 필요. 발표 전에는 기술서를 코드에 맞춰 고칠지 결정 | 김민영 지적, 팀장 결정 대기 |
 
 ## 📄 출처 표기
 

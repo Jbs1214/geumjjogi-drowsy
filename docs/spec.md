@@ -269,7 +269,7 @@ DMD를 고른 이유: 후보 4개(DMD, UTA-RLDD, YawDD, NTHU-DDD) 중 주간 실
 | 단계 | 정상, 주의, 졸음 |
 | 눈 감김 시간 | 연속 눈 감김(초) |
 | 클래스 확률 | 모델 사용 시 4개 확률 |
-| 이벤트 | 주의, 졸음, 하품 알림, 확인 필요, 판정 불가, 이어받기. 판정 불가는 얼굴이 1초(`UNKNOWN_EVENT_GAP_SEC`) 이상 보였다가 사라질 때만 새로 셉니다(얼굴이 깜빡여도 한 번) |
+| 이벤트 | 주의, 졸음, 하품 알림, 확인 필요, 판정 불가, 이어받기 |
 
 ### 6.3 운전 종료 후 요약
 
@@ -343,7 +343,7 @@ DMD를 고른 이유: 후보 4개(DMD, UTA-RLDD, YawDD, NTHU-DDD) 중 주간 실
 
 - 구현 완료, 병합 대기: `feat/head-pitch`(고개 숙임 상대 pitch 17.5도), `feat/dmd-convert`(`dataset/dmd_convert.py`), `feat/yawn-model`(하품 전용 모델의 학습과 실시간 연결, 하품 끊김 1.0초 병합과 길이 상한 7초), `feat/demo-final`(영상 데모·결과 그래프의 최종 구성, 마스크 스위치), `feat/baseline`(scikit-learn 기준선), `feat/rule-params`(`best_params.json` 연결), `feat/main-merge`(`main`과 이 문서의 합본). 모두 `feat/seq-pipeline` 위에 이 순서로 쌓여 있어, `feat/main-merge` 하나를 `main`에 병합하면 전부 들어갑니다.
 - `calibrate`·`label`은 저장소 밖 이전 도구입니다.
-- 선글라스 판정 불가(8장)는 코드에 없습니다. 선글라스는 기준값을 정할 영상이 없습니다. 판정 로그(6.2)의 `wall_time`·클래스 확률은 11.06부터 Streamlit 데모(`demo/streamlit_app.py`)가 기록합니다.
+- 판정 로그(6.2)의 `wall_time`·클래스 확률 기록과 선글라스 판정 불가(8장)는 코드에 없습니다. 선글라스는 기준값을 정할 영상이 없습니다.
 
 **기준 정리 (2026-11-05).** 코드와 문서가 어긋났던 항목을 아래처럼 정했습니다.
 
