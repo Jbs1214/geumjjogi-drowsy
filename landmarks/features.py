@@ -4,9 +4,6 @@
 import numpy as np
 import pandas as pd
 
-# sequence_model 입력으로 쓰는 특징 열 (config.FEATURE_COLUMNS와 맞춘다)
-FEATURE_COLUMNS = ("ear", "mar", "pitch", "yaw", "roll")
-
 
 def _dist(df: pd.DataFrame, a: str, b: str) -> pd.Series:
     return np.hypot(df[f"{a}_x"] - df[f"{b}_x"], df[f"{a}_y"] - df[f"{b}_y"])

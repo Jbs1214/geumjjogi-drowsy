@@ -188,7 +188,7 @@ class EarlyStoppingTest(Base):
     def run_with_scores(self, scores: list[float]) -> dict:
         metrics = [{"macro_f1": s, "accuracy": s, "f1_per_class": {0: s}} for s in scores]
         with mock.patch.object(tl, "classification_metrics", side_effect=metrics):
-            return self.call("--epochs", "50")["seeds"][0]
+            return self.call("--epochs", "50", "--seeds", "42")["seeds"][0]     # 점수 목록은 시드 1개 분량이다
 
     def test_stops_eight_epochs_after_best(self):
         row = self.run_with_scores([0.1, 0.5, 0.4, 0.3, 0.5, 0.2, 0.2, 0.2, 0.2, 0.2])

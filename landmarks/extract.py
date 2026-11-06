@@ -103,15 +103,17 @@ def extract_video(path: Path, model_path: Path = MODEL_PATH, delegate: str = "cp
         raise ValueError(f"영상 FPS를 읽을 수 없습니다: {path}")
 
     rows = []
-    with LandmarkExtractor(model_path, delegate) as extractor:
-        i = 0
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            rows.append(extractor.process(frame, i / fps))
-            i += 1
-    cap.release()
+    try:
+        with LandmarkExtractor(model_path, delegate) as extractor:
+            i = 0
+            while True:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                rows.append(extractor.process(frame, i / fps))
+                i += 1
+    finally:
+        cap.release()
     return pd.DataFrame(rows, columns=COLUMNS)
 
 

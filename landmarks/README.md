@@ -12,11 +12,11 @@
 | --- | --- |
 | `points.py` | 좌표 17개 번호 (눈 12, 입 4, 코끝 1). 점을 바꾸면 이 파일만 고친다 |
 | `extract.py` | 영상 → Face Landmarker → 프레임별 시각·검출 여부·좌표·고개 각도·블렌드셰이프 표 (CSV) |
-| `features.py` | 좌표 표에 face·EAR·MAR 열을 더한다 (`add_features()`). 모델 입력 11개 순서는 `FEATURE_COLUMNS` |
+| `features.py` | 좌표 표에 `ear_l`·`ear_r`·`ear`·`mar` 열을 더한다 (`add_features()`). 모델 입력 11개 순서는 `config.FEATURES`이고, `face`는 `sequence_model/build_windows.py`의 `feature_matrix()`가 `face_found`로 만든다 |
 
 ## 입력 / 출력
 - 입력: 영상 파일 (mp4 등). 실시간 데모는 `LandmarkExtractor.process()`에 프레임을 하나씩 넣는다
-- 출력: 프레임마다 한 행. 얼굴이 안 잡히면 좌표·각도·블렌드셰이프·EAR·MAR는 NaN (`face`는 0)
+- 출력: 프레임마다 한 행. 얼굴이 안 잡히면 좌표·각도·블렌드셰이프·EAR·MAR는 NaN (`face_found`는 False)
 
 | 열 | 형식 | 설명 |
 | --- | --- | --- |
@@ -25,7 +25,7 @@
 | `{이름}_x`, `{이름}_y` | 픽셀 | 좌표 17개. 이름은 `le1~le6`, `re1~re6`, `mouth_l/r/t/b`, `nose` |
 | `pitch`, `yaw`, `roll` | 도 | 고개 각도. pitch는 **숙이면 +, 들면 −** |
 | `blink_l`, `blink_r`, `jaw_open` | 0~1 | 블렌드셰이프 `eyeBlinkLeft`, `eyeBlinkRight`, `jawOpen` |
-| `face` | 0/1 | `face_found`의 숫자형. 모델 입력용. `add_features()`가 더함 |
+| `face` | 0/1 | `face_found`의 숫자형. 모델 입력용. 이 표에는 없고 `feature_matrix()`가 만든다 |
 | `ear_l`, `ear_r`, `ear` | 비율 | 눈 종횡비 (좌, 우, 평균). 좌우는 `auto_label.py`와 같다. `add_features()`가 더함 |
 | `mar` | 비율 | 입 종횡비. `add_features()`가 더함 |
 
