@@ -57,6 +57,30 @@ def alarm_stage(judge: "LiveJudge", rule: "LiveRule") -> int:
     return max(rule.stage, WARN) if judge.history and judge.yawn_repeat.active(judge.history[-1][0]) else rule.stage
 
 
+def check_active(judge: "LiveJudge", rule: "LiveRule") -> bool:
+    """확인 필요 경고가 켜져 있는지. 최종 구성은 규칙(얼굴 미검출·pitch 고개 숙임, 기술서 3.3), 아니면 모델의 판정 불가다."""
+    return rule.unknown_watch.active if judge.final else judge.unknown_watch.active
+
+
+def current_state(judge: "LiveJudge", rule: "LiveRule") -> str:
+    """화면의 현재 상태. 최종 구성은 규칙·하품 전용 모델로 정한다(기술서 3.2·3.3·4.3, 우선순위 2.4):
+    판정 불가 > 눈 감김(깜빡임보다 긴 것) > 고개 숙임 > 하품 감지 > 정상. 규칙이 평소 EAR을 정하기 전에는 준비 중이다.
+    최종 구성이 아니면 4클래스 화면 클래스다."""
+    if not judge.history or (judge.final and not rule.ready):
+        return "준비 중"
+    if not judge.final:
+        return config.CLASSES[judge.shown] if judge.shown >= 0 else "판정 불가"
+    if not rule.found:
+        return "판정 불가"
+    if rule.closed_sec >= config.DISPLAY_MIN_CLOSE_SEC - 1e-9:
+        return "눈 감김"
+    if rule.head_down:
+        return "고개 숙임"
+    if judge.yawning and not judge.mask:
+        return "하품 감지"
+    return "정상"
+
+
 def frame_vector(raw: dict) -> np.ndarray:
     """LandmarkExtractor.process() 한 행 → 특징 11개 벡터 (feature_matrix와 같은 미검출 처리)."""
     from landmarks.extract import COLUMNS
@@ -88,6 +112,7 @@ class LiveJudge:
         self._k = 0
         self._grid: list[tuple[np.ndarray, float, bool]] = []
         self._held: np.ndarray | None = None
+        self.probs: np.ndarray | None = None        # 마지막 판정의 4클래스 확률(판정 불가면 None). 판정 로그용(기술서 6.2)
         self._hysteresis = Hysteresis(post)
         self._timer = ClosureTimer(grace_sec=post.grace, carry_max_sec=post.carry_max)
         self.yawn_repeat, self.unknown_watch = YawnRepeat(0.0) if self.final else YawnRepeat(), UnknownWatch()
@@ -120,7 +145,7 @@ class LiveJudge:
             if window is not None:
                 prob = next(probs)
                 ok = 1 - window[:, face].mean() <= config.MAX_MISSING and window[-1, face] > 0.5
-                self._held = prob if ok else None
+                self._held = self.probs = prob if ok else None
                 if self.final:
                     self._yawn_on = bool(ok and next(yawn_probs) >= config.YAWN_ENTER)
             state = self._hysteresis.step(self._held if j >= 0 else None)
@@ -142,7 +167,8 @@ class LiveJudge:
                 self.events.append(Event(g, "졸음" if self.stage == DROWSY else "주의"))
             if self.yawn_repeat.update(g, not self.mask and (self.yawning if self.final else self.shown == config.YAWN)):
                 self.events.append(Event(g, "하품 주의"))
-            if j >= 0 and self.unknown_watch.update(g, state < 0):
+            # 최종 구성의 확인 필요는 규칙(LiveRule)이 얼굴 미검출·pitch 고개 숙임으로 센다 (기술서 3.3·4.3)
+            if j >= 0 and not self.final and self.unknown_watch.update(g, state < 0):
                 self.events.append(Event(g, "확인 필요"))
 
 
@@ -166,7 +192,9 @@ class LiveRule:
         self._baseline, self._baseline_t = np.nan, -np.inf
         self._timer = ClosureTimer()
         self._head = HeadDown()
+        self.unknown_watch = UnknownWatch()
         self.ready, self.stage, self.closed_sec = False, NORMAL, 0.0
+        self.found, self.head_down = False, False
         self.history: list[tuple[float, int, float]] = []       # (시각, 단계, 연속 눈 감김 초)
 
     def update(self, t: float, found: bool, ear: float, pitch: float = float("nan"), ear_l: float = float("nan"), ear_r: float = float("nan")) -> None:
@@ -183,8 +211,12 @@ class LiveRule:
         before = self.stage
         self.stage = self._timer.update(t, closed, unknown=(not found) or head_down)
         self.closed_sec = self._timer.elapsed
+        self.found, self.head_down = found, head_down
         if self._events is not None and self.stage > before:
             self._events.append(Event(t, "졸음" if self.stage == DROWSY else "주의"))
+        # 확인 필요(기술서 3.3): 얼굴 미검출·고개 숙임이 3초 이상이고 직전 눈 감김을 이어받는 중이 아닐 때
+        if self.unknown_watch.update(t, ((not found) or head_down) and self.closed_sec == 0) and self._events is not None:
+            self._events.append(Event(t, "확인 필요"))
         self.history.append((t, self.stage, self.closed_sec))
 
 
@@ -232,7 +264,7 @@ def draw(frame: np.ndarray, judge: LiveJudge, rule: LiveRule, ear: float, mar: f
     top = margin + board.shape[0] + round(6 * scale)
     blend(frame, info_box(note, scale), margin, top)
     alerts = [text for text, on in (("하품 주의 (5분 3회)", judge.yawn_repeat.active(judge.history[-1][0] if judge.history else 0.0)),
-                                    ("확인 필요 (판정 불가 3초)", judge.unknown_watch.active)) if on]
+                                    ("확인 필요 (판정 불가·고개 숙임 3초)", check_active(judge, rule))) if on]
     for i, text in enumerate(alerts):
         blend(frame, info_box(text, scale * 1.2), margin, top + round((i + 1) * 40 * scale))
     if stage == DROWSY:
@@ -335,7 +367,7 @@ def run(source: str, weights: Path, show: bool, sound: bool, max_seconds: float 
             stamps = stamps[-60:]
             rate = (len(stamps) - 1) / (stamps[-1] - stamps[0]) if len(stamps) > 1 and stamps[-1] > stamps[0] else 0.0
             if beeper:
-                beeper.set(alarm_stage(judge, rule) == DROWSY or judge.unknown_watch.active)
+                beeper.set(alarm_stage(judge, rule) == DROWSY or check_active(judge, rule))
             if show:
                 draw(frame, judge, rule, ear, mar, rate)
                 cv2.imshow(WINDOW_NAME, frame)
