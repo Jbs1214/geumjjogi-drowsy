@@ -51,8 +51,7 @@
 | 라이브러리 | 버전 | 용도 |
 | --- | --- | --- |
 | `mediapipe` | 1.2.0 | 얼굴 랜드마크 추출 (Tasks API) |
-| `opencv-python` | 4.10.0.84 | 영상·웹캠 프레임 읽기 |
-| `opencv-contrib-python` | 4.10.0.84 | `mediapipe`가 함께 설치하는 패키지. 버전 고정용 |
+| `opencv-contrib-python` | 4.10.0.84 | 영상·웹캠 프레임 읽기. `mediapipe`가 요구하는 패키지라 이것만 둔다 |
 | `numpy` | 2.3.5 | 특징 계산 |
 | `pandas` | 3.0.6 | 특징 시계열 표 |
 | `pyarrow` | 26.0.0 | 특징 표를 parquet로 저장·읽기 |
