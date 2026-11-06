@@ -3,7 +3,9 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from landmarks.features import FEATURE_COLUMNS, add_features
+import config
+from landmarks.extract import COLUMNS
+from landmarks.features import add_features
 from landmarks.points import LEFT_EYE, MOUTH, POINTS, RIGHT_EYE
 
 
@@ -20,9 +22,13 @@ def table(left_open: float, right_open: float) -> pd.DataFrame:
 
 
 class FeaturesTest(unittest.TestCase):
-    def test_columns_match_auto_label_order(self):
-        self.assertEqual(FEATURE_COLUMNS, ("face", "ear_l", "ear_r", "ear", "mar", "pitch", "yaw", "roll",
+    def test_extract_and_features_give_model_inputs(self):
+        # 기술서 1.2의 11개: face는 build_windows.feature_matrix가 face_found로 만들고, 나머지는 extract + add_features 열이다
+        self.assertEqual(config.FEATURES, ("face", "ear_l", "ear_r", "ear", "mar", "pitch", "yaw", "roll",
                                            "blink_l", "blink_r", "jaw_open"))
+        out = add_features(table(1.0, 1.0).reindex(columns=COLUMNS))
+        self.assertIn("face_found", out.columns)
+        self.assertEqual([name for name in config.FEATURES if name not in out.columns], [config.FACE_COLUMN])
 
     def test_eye_sides_match_auto_label(self):
         self.assertEqual(LEFT_EYE, (362, 385, 387, 263, 373, 380))
@@ -42,7 +48,7 @@ class FeaturesTest(unittest.TestCase):
 
     def test_missing_face(self):
         out = add_features(table(1.0, 1.0))
-        self.assertEqual(out["face"].tolist(), [1.0, 0.0])
+        self.assertEqual(out["face_found"].tolist(), [True, False])
         self.assertTrue(out.loc[1, ["ear_l", "ear_r", "ear", "mar"]].isna().all())
 
 

@@ -1,8 +1,8 @@
 # 4클래스 LSTM을 windows.npz·norm.npz로 학습한다 (기술서 2.2, 2.6, 4절).
-# 옛 기준(3클래스, 2초 창)인 config.py·train.py·windows.py를 쓰지 않고 build_windows.py의 상수와 models.py만 재사용한다.
+# 창 상수는 build_windows.py, 학습 설정(EPOCHS·BATCH_SIZE·LR·PATIENCE)은 1D-CNN과 같은 config.py 값을 쓴다 (기술서 4.2).
 # Test는 --final일 때만 읽고, 모델 선택은 Val로만 한다. --final은 다시 학습하지 않고 이미 학습한 가중치로 한 번만 잰다.
 #
-# 실행: python -m sequence_model.train_lstm --tag v01 [--bundle <폴더>] [--seeds 42] [--device cuda|cpu]
+# 실행: python -m sequence_model.train_lstm --tag v01 [--bundle <폴더>] [--seeds 42 43 44] [--device cuda|cpu]
 #       python -m sequence_model.train_lstm --tag v01 --final
 #       python -m sequence_model.train_lstm --tag diag --seeds 42 43 44 --diagnose     (학습 설정은 그대로, 진단 내용만 더 적는다)
 #       python -m sequence_model.train_lstm --tag v01_last --pool last                 (마지막 시점 출력을 쓰는 참고 실험)
@@ -16,6 +16,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
+import config
 from eval.window_eval import markdown_table
 from eval.metrics import classification_metrics
 from sequence_model.build_windows import CLASS_NAMES, EYE_CLOSED, FEATURE_COLUMNS, HEAD_DOWN, WINDOW_FRAMES
@@ -23,11 +24,8 @@ from sequence_model.build_windows import CLASS_NAMES, EYE_CLOSED, FEATURE_COLUMN
 DEFAULT_BUNDLE = Path("data/processed/bundle_20261103_84e7bf4")
 HIDDEN = 32
 DROPOUT = 0.3
-EPOCHS = 50
-BATCH_SIZE = 64
-LR = 1e-3
-PATIENCE = 8
-SEEDS = (42,)
+EPOCHS, BATCH_SIZE, LR, PATIENCE = config.EPOCHS, config.BATCH_SIZE, config.LR, config.PATIENCE
+SEEDS = config.SEEDS                    # 1D-CNN(train.py)과 같은 시드 (기술서 4.2)
 POOLS = {"mean": "lstm", "last": "lstm_last"}   # 풀링 → 체크포인트 model 값. lstm_last는 predictor.py에서 오류로 멈춘다 (평균 풀링으로 잘못 돌지 않게)
 
 N_CLASSES = len(CLASS_NAMES)
