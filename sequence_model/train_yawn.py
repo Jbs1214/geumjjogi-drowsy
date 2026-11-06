@@ -32,7 +32,7 @@ class YawnPredictor:
     outputs = 1
 
     def __init__(self, path, device: str = "cpu") -> None:
-        saved = torch.load(path, map_location=device, weights_only=False)
+        saved = torch.load(path, map_location=device, weights_only=True)     # 텐서·숫자·문자·list·dict만 연다 (CWE-502)
         self.name, self.norm, self.device = saved["model"], saved["norm"], device
         self.relative = bool(self.norm.get("relative", False))
         self.model = build_yawn_model(saved["model"]).to(device)
