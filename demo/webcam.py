@@ -27,6 +27,7 @@ from sequence_model.build_windows import feature_matrix
 from sequence_model.postprocess import NONE, Hysteresis, Post, display_classes, for_weights, yawn_classes
 from rule_based.alarm import DROWSY, NORMAL, WARN, ClosureTimer
 from rule_based.alerts import Event, MouthClosedWatch, UnknownWatch, YawnRepeat, YawnTracker, summary_markdown
+from rule_based.config import BASELINE_EVERY_SEC, RULE_MIN_SEC     # 다른 모듈이 demo.webcam에서 가져가는 이름도 유지한다
 from rule_based.head import HeadDown
 from demo.cfr import TimedWriter
 from demo.demo_video import STAGE_RGB, blend, font, panel
@@ -45,8 +46,6 @@ def default_weights() -> Path:
 DEFAULT_WEIGHTS = default_weights()
 WINDOW_NAME = "drowsy v3 webcam"
 QUIT_KEYS = (ord("q"), 27)
-RULE_MIN_SEC = 5.0          # 평소 EAR을 정할 기록이 이보다 짧으면 규칙은 준비 중이다
-BASELINE_EVERY_SEC = 0.5    # 평소 EAR을 다시 구하는 간격
 BEEP_HZ, BEEP_MS, BEEP_GAP_SEC = 1000, 300, 0.2
 
 

@@ -14,15 +14,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from eval.metrics import (_first_alert, alert_delay, classification_metrics, event_recall, false_alarms_per_hour,
-                          match_segments, prf, segments_from_labels)
+from eval.metrics import (LABEL_TOLERANCE_SEC, _first_alert, alert_delay, classification_metrics, event_recall,
+                          false_alarms_per_hour, match_segments, prf, segments_from_labels)
 from rule_based import config
 from rule_based.alarm import DROWSY as DROWSY_STAGE, WARN, stage_starts, timer_stages
 from rule_based.common import runs
 from sequence_model.build_windows import CLASS_NAMES, EYE_CLOSED, STRIDE_SEC
 
 CAUTION, DROWSY = "주의", "졸음"
-LABEL_TOLERANCE_SEC = 0.5   # 구간 라벨 오차
 ALERT_TOLERANCE_SEC = 0.5   # 창 간격 0.5초가 해상도 한계라서 0.5초로 둔다. Euro NCAP 허용 오차 0.2초는 참고로만 본다
 MIN_CLOSE_SEC = 0.1         # 기술서 3.1. 감김 길이가 창 수 × 0.5초라 가장 짧아도 0.5초이므로 0.5초 간격에서는 효과가 없다
 
