@@ -1,6 +1,8 @@
 # 브라우저 웹캠으로 실시간 판정과 경고를 보여 주는 Streamlit 데모 (최종 기획서 4 유저 시나리오, 산출물). 로컬 시연용이다.
 # 판정은 demo/webcam.py와 같은 엔진(LiveJudge·LiveRule·알림)을 쓴다. 모델은 runs/final.json이 고른 것이고, 하품은 최종 구성의 하품 전용 모델이다.
-# 화면은 두 페이지다: 운전하기(웹캠 + 계기판, 끝나면 운전 후 리포트), 지난 운전(runs/sessions/ 판정 로그를 같은 리포트로 보기).
+# 화면은 세 페이지다: 운전하기(웹캠 + 계기판, 끝나면 운전 후 리포트), 지난 운전(runs/sessions/ 판정 로그를 같은 리포트로 보기),
+# 관람(발표자 PC의 시연을 다른 PC 브라우저에서 실시간으로 보기, 카메라 없음. 같은 네트워크에서 열려면 서버를 --server.address 0.0.0.0으로 켠다.
+# 관람은 카메라를 쓰지 않아 http로 충분하고, 발표자는 http://localhost로 열면 웹캠이 켜진다).
 # 프레임은 이 PC의 파이썬으로만 오간다. STUN 서버를 쓰지 않고 서버는 127.0.0.1에만 연다 (.streamlit/config.toml). 영상은 저장하지 않는다.
 #
 # 실행: drowsy_v3 폴더에서 python -m streamlit run demo/streamlit_app.py
@@ -27,6 +29,10 @@ from rule_based.alerts import Event, MouthClosedWatch, YawnTracker, summary_mark
 REFRESH_SEC = 0.1            # 계기판을 다시 그리는 간격(초). 길면 계기판이 영상보다 늦어 보인다
 CHART_SEC = 2.0             # 실시간 그래프를 다시 그리는 간격(초). 깜빡임을 줄이려고 계기판보다 드물게 그린다
 LIVE_CHART_SEC = 300.0      # 실시간 그래프에 보여 줄 최근 구간(초). 긴 운전에서 2초마다 전체 기록을 다시 그리지 않게 한다
+VIEW_EVERY_SEC = 0.1        # 관람 페이지로 보내는 프레임 간격(초). 관람 화면은 초당 약 10장으로 보인다
+VIEW_WIDTH = 640            # 관람 페이지로 보내는 프레임 너비(픽셀)
+VIEW_JPEG_QUALITY = 70      # 관람 프레임 JPEG 품질
+VIEW_STALE_SEC = 3.0        # 마지막 프레임이 이보다 오래되면 관람 화면에 "영상이 멈춤"을 알린다
 LOCAL_ONLY = {"iceServers": []}     # 같은 PC 안에서만 연결한다
 CONSTRAINTS = {"video": {"width": 640, "height": 480, "frameRate": {"ideal": 30}}, "audio": False}
 STAGE_NAMES = ("정상", "주의", "졸음")
@@ -77,6 +83,8 @@ class LiveSession:
         self.lock = threading.Lock()
         self.began: float | None = None
         self.mask = False
+        self.broadcast: "Broadcast | None" = None     # 관람 페이지로 보낼 곳(drive_page가 넣는다)
+        self._shared_at = 0.0
         self.reset()
 
     def reset(self) -> None:
@@ -122,6 +130,12 @@ class LiveSession:
             # 판정 값은 오른쪽 계기판에만 보인다. 영상 위에는 그리지 않아 운전자 얼굴을 가리지 않는다
             if self.beeper:
                 self.beeper.set(alarm_stage(self.judge, self.rule) == DROWSY or check_active(self.judge, self.rule))
+        # 관람 페이지(다른 PC 브라우저)로 최근 프레임 한 장을 보낸다. 메모리에만 두고 저장하지 않는다
+        if self.broadcast is not None and now - self._shared_at >= VIEW_EVERY_SEC:
+            self._shared_at = now
+            jpeg = encode_view(frame)
+            if jpeg is not None:
+                self.broadcast.publish(self, jpeg)
 
     def _log_frame(self, t: float, found: bool) -> None:
         """잠금을 잡은 상태에서 부른다. 판정 로그 한 행(기술서 6.2): 실제 시각, 영상 시각, 단계, 연속 눈 감김, 현재 상태, 4클래스 확률, 이벤트.
@@ -195,8 +209,75 @@ class LiveSession:
         return snap
 
 
+class Broadcast:
+    """관람 페이지로 보낼 발표자 시연. 서버에 하나만 두고(broadcast()), 카메라를 켠 마지막 세션이 최근 프레임 한 장을 올린다.
+    관람 페이지는 이 세션의 계기판 값과 프레임을 읽기만 한다. 프레임은 메모리에 한 장만 두고 파일로 저장하지 않는다."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._session: LiveSession | None = None
+        self._jpeg: bytes | None = None
+        self._at = 0.0
+
+    def publish(self, session: "LiveSession", jpeg: bytes) -> None:
+        with self._lock:
+            self._session, self._jpeg, self._at = session, jpeg, time.time()
+
+    def latest(self) -> tuple["LiveSession | None", bytes | None, float]:
+        """(발표 중인 세션, 최근 프레임 JPEG, 올린 시각 time.time()). 아직 없으면 (None, None, 0.0)."""
+        with self._lock:
+            return self._session, self._jpeg, self._at
+
+
+def _new_broadcast() -> Broadcast:
+    return Broadcast()
+
+
+def broadcast() -> Broadcast:
+    """서버에 하나인 방송 저장소. 모든 브라우저 탭(운전하기·관람)이 같이 쓴다."""
+    import streamlit as st
+
+    return st.cache_resource(show_spinner=False)(_new_broadcast)()
+
+
+def encode_view(frame: np.ndarray) -> bytes | None:
+    """BGR 프레임 → 관람용 JPEG(너비 VIEW_WIDTH 이하). 실패하면 None."""
+    import cv2
+
+    height, width = frame.shape[:2]
+    if width > VIEW_WIDTH:
+        frame = cv2.resize(frame, (VIEW_WIDTH, round(height * VIEW_WIDTH / width)))
+    ok, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, VIEW_JPEG_QUALITY])
+    return buffer.tobytes() if ok else None
+
+
 def fmt(value: float, digits: int = 2) -> str:
     return "-" if np.isnan(value) else f"{value:.{digits}f}"
+
+
+def set_alarm(area, on: bool) -> None:
+    """졸음 테두리(화면 가장자리 깜빡임)를 켜거나 끈다. 한 줄 조건식으로 쓰면 Streamlit 매직이 반환값을 화면에 찍으므로 if 문으로 쓴다."""
+    from demo.cluster import ALARM_HTML
+
+    if on:
+        area.markdown(ALARM_HTML, unsafe_allow_html=True)
+    else:
+        area.empty()
+
+
+def draw_cluster(area, snap: dict | None) -> None:
+    """계기판 한 장. snap이 None이면 대기 화면이다(운전하기·관람이 같이 쓴다)."""
+    from demo.cluster import cluster_html
+
+    names = ("현재 상태", "모델 판정(비교)", "EAR", "MAR", "처리 속도", "운전 시간")
+    if snap is None:
+        area.markdown(cluster_html(0.0, NORMAL, "대기", {}, [(name, "-") for name in names]), unsafe_allow_html=True)
+        return
+    stage, seconds = snap["stage_index"], snap["seconds"]
+    lit = {"주의": stage == WARN, "졸음": stage == DROWSY, "하품 주의": snap["yawn_alert"], "확인 필요": snap["check_alert"]}
+    values = (snap["state"], snap["model_state"], fmt(snap["ear"]), fmt(snap["mar"]), f"{snap['rate']:.1f} FPS",
+              f"{int(seconds // 60):02d}:{int(seconds % 60):02d}")
+    area.markdown(cluster_html(snap["closed_sec"], stage, snap["stage"], lit, list(zip(names, values))), unsafe_allow_html=True)
 
 
 def drive_page() -> None:
@@ -206,7 +287,6 @@ def drive_page() -> None:
     from streamlit_webrtc import WebRtcMode, webrtc_streamer
 
     from demo.charts import closure_chart
-    from demo.cluster import ALARM_HTML, cluster_html
     from demo.report import live_frames, show_report
     from demo.webcam import default_weights
 
@@ -215,6 +295,7 @@ def drive_page() -> None:
         with st.spinner("모델과 얼굴 인식기를 불러오는 중입니다"):
             st.session_state["drowsy_session"] = LiveSession(default_weights())
     session = st.session_state["drowsy_session"]
+    session.broadcast = broadcast()     # 관람 페이지가 이 탭의 시연을 볼 수 있게 한다
     if st.sidebar.button("새 운전 시작", help="지금까지의 판정 기록을 지우고 처음부터 잽니다", use_container_width=True):
         session.reset()
     session.set_mask(st.sidebar.checkbox("마스크 착용 (하품 감지 끄기)", value=session.mask))
@@ -237,18 +318,6 @@ def drive_page() -> None:
     area, alarm = right.empty(), st.empty()
     chart = st.empty()
 
-    def show(snap: dict) -> None:
-        stage, seconds = snap["stage_index"], snap["seconds"]
-        lit = {"주의": stage == WARN, "졸음": stage == DROWSY, "하품 주의": snap["yawn_alert"], "확인 필요": snap["check_alert"]}
-        items = [("현재 상태", snap["state"]), ("모델 판정(비교)", snap["model_state"]),
-                 ("EAR", fmt(snap["ear"])), ("MAR", fmt(snap["mar"])),
-                 ("처리 속도", f"{snap['rate']:.1f} FPS"), ("운전 시간", f"{int(seconds // 60):02d}:{int(seconds % 60):02d}")]
-        area.markdown(cluster_html(snap["closed_sec"], stage, snap["stage"], lit, items), unsafe_allow_html=True)
-
-    def idle() -> None:
-        items = [(name, "-") for name in ("현재 상태", "모델 판정(비교)", "EAR", "MAR", "처리 속도", "운전 시간")]
-        area.markdown(cluster_html(0.0, NORMAL, "대기", {}, items), unsafe_allow_html=True)
-
     if context.state.playing and session.finished is not None:     # 운전을 끝낸 뒤 카메라를 다시 켰다 = 새 운전
         session.reset()
     alarm_on, chart_at = False, 0.0
@@ -256,10 +325,10 @@ def drive_page() -> None:
         now = time.perf_counter()
         draw_chart = now - chart_at >= CHART_SEC
         snap = session.snapshot(history=draw_chart)
-        show(snap)
+        draw_cluster(area, snap)
         if (snap["stage_index"] == DROWSY) != alarm_on:        # 졸음 테두리는 바뀔 때만 다시 그린다(깜빡임 효과가 끊기지 않게)
             alarm_on = not alarm_on
-            alarm.markdown(ALARM_HTML, unsafe_allow_html=True) if alarm_on else alarm.empty()
+            set_alarm(alarm, alarm_on)
         if draw_chart and snap["history"]:
             chart_at = now
             timeline = live_frames(snap)
@@ -267,14 +336,66 @@ def drive_page() -> None:
                                use_container_width=True)
         time.sleep(REFRESH_SEC)
     alarm.empty()
-    idle()
+    draw_cluster(area, None)
     if session.snapshot(history=False)["seconds"] > 0 or session.finished is not None:
         snap = session.finish()
         chart.empty()
         st.divider()
         show_report(st, pd.DataFrame(session.log), note="방금 끝난 운전입니다. 기록은 지난 운전에서 다시 볼 수 있습니다.")
     else:
-        chart.info("카메라 켜기를 누르면 브라우저가 카메라 권한을 묻습니다. 영상은 이 PC 밖으로 나가지 않고 저장되지도 않습니다.")
+        chart.info("카메라 켜기를 누르면 브라우저가 카메라 권한을 묻습니다. 영상은 저장하지 않고, 관람 페이지를 연 브라우저에만 보입니다.")
+
+
+def watch_page() -> None:
+    """관람: 발표자 PC의 운전하기 탭에서 켠 시연(최근 프레임·계기판·실시간 그래프)을 다른 PC 브라우저에서 본다.
+    이 페이지는 카메라를 쓰지 않고 판정도 하지 않는다. 발표자가 운전을 끝내면 같은 운전 후 리포트를 보여 준다."""
+    import streamlit as st
+
+    from demo.charts import closure_chart
+    from demo.report import live_frames, show_report
+
+    st.title("시연 관람")
+    st.caption("발표자 PC에서 운전하기의 카메라를 켜면 그 영상과 계기판이 여기에 실시간으로 나옵니다. "
+               "이 페이지는 카메라를 쓰지 않고, 영상은 저장하지 않습니다.")
+    hub = broadcast()
+    left, right = st.columns([3, 2], gap="large")
+    picture, area = left.empty(), right.empty()
+    alarm, chart, report = st.empty(), st.empty(), st.empty()
+    alarm_on, chart_at, reported = False, 0.0, None
+    while True:
+        session, jpeg, at = hub.latest()
+        if session is None or jpeg is None:
+            picture.info("발표자 PC에서 카메라를 켜면 여기에 나옵니다.")
+            draw_cluster(area, None)
+            time.sleep(VIEW_EVERY_SEC)
+            continue
+        stale = time.time() - at > VIEW_STALE_SEC
+        picture.image(jpeg, caption="발표자 영상이 멈췄습니다(카메라가 꺼졌거나 운전이 끝남)" if stale else None,
+                      use_container_width=True)
+        now = time.perf_counter()
+        draw_chart = now - chart_at >= CHART_SEC
+        snap = session.snapshot(history=draw_chart)
+        draw_cluster(area, snap)
+        drowsy = snap["stage_index"] == DROWSY and not stale
+        if drowsy != alarm_on:              # 졸음 테두리는 바뀔 때만 다시 그린다
+            alarm_on = drowsy
+            set_alarm(alarm, alarm_on)
+        finished = session.finished
+        if finished is not None and reported is not finished:       # 발표자가 운전을 끝냈다: 같은 리포트를 한 번 그린다
+            reported = finished
+            chart.empty()
+            with report.container():
+                show_report(st, pd.DataFrame(list(session.log)), note="발표자가 방금 끝낸 운전입니다.")
+        elif finished is None:
+            if reported is not None:        # 새 운전이 시작됐다
+                reported = None
+                report.empty()
+            if draw_chart and snap["history"]:
+                chart_at = now
+                timeline = live_frames(snap)
+                chart.altair_chart(closure_chart(timeline.iloc[::config.JUDGE_EVERY], timeline["시각"].iloc[-1], timeline["시각"].iloc[0]),
+                                   use_container_width=True)
+        time.sleep(VIEW_EVERY_SEC)
 
 
 def history_page() -> None:
@@ -300,7 +421,8 @@ def main() -> None:
     st.set_page_config(page_title="졸음 계기판", page_icon=":material/visibility:", layout="wide")
     st.markdown(CSS, unsafe_allow_html=True)
     page = st.navigation([st.Page(drive_page, title="운전하기", icon=":material/directions_car:", default=True),
-                          st.Page(history_page, title="지난 운전", icon=":material/history:", url_path="history")])
+                          st.Page(history_page, title="지난 운전", icon=":material/history:", url_path="history"),
+                          st.Page(watch_page, title="관람", icon=":material/live_tv:", url_path="watch")])
     page.run()
 
 

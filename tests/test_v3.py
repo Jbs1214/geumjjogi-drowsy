@@ -220,6 +220,27 @@ class LiveTest(unittest.TestCase):
         self.assertEqual(rule.stage, 2)
 
 
+class BroadcastTest(unittest.TestCase):
+    """관람 페이지용 방송 저장소: 카메라를 켠 마지막 세션의 최근 프레임 한 장만 둔다."""
+
+    def test_latest_frame_from_last_publisher(self):
+        from demo.streamlit_app import Broadcast
+        hub = Broadcast()
+        self.assertEqual(hub.latest(), (None, None, 0.0))
+        hub.publish("발표자1", b"a")
+        hub.publish("발표자2", b"b")
+        session, jpeg, at = hub.latest()
+        self.assertEqual((session, jpeg), ("발표자2", b"b"))
+        self.assertGreater(at, 0.0)
+
+    def test_view_frame_is_small_jpeg(self):
+        import cv2
+        from demo.streamlit_app import VIEW_WIDTH, encode_view
+        jpeg = encode_view(np.zeros((720, 1280, 3), dtype=np.uint8))
+        self.assertTrue(jpeg.startswith(b"\xff\xd8"))
+        self.assertEqual(cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR).shape[1], VIEW_WIDTH)
+
+
 class PostTest(unittest.TestCase):
     def test_grace_zero_is_old_timer_and_grace_bridges(self):
         from rule_based.alarm import ClosureTimer, timer_stages
