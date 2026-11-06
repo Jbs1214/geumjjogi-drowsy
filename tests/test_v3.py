@@ -883,5 +883,26 @@ class MinyoungWindowsTest(unittest.TestCase):
                 load_windows(Path(folder))
 
 
+class UnknownStartsTest(unittest.TestCase):
+    """판정 로그의 판정 불가 이벤트: 얼굴이 UNKNOWN_EVENT_GAP_SEC(1초) 이상 보였다가 사라질 때만 새로 센다 (기술서 6.2)."""
+
+    @staticmethod
+    def count(frames, fps=30):
+        from demo.streamlit_app import UnknownStarts
+        starts = UnknownStarts()
+        return sum(starts.update(i / fps, found) for i, found in enumerate(frames))
+
+    def test_flicker_counts_once(self):
+        seen, gone, flick = [True] * 60, [False] * 9, [True] * 6     # 0.2초씩 다시 보였다가 사라짐
+        self.assertEqual(self.count(seen + gone + flick + gone + flick + gone), 1)
+
+    def test_new_event_after_face_seen_long_enough(self):
+        seen, gone = [True] * 60, [False] * 9
+        self.assertEqual(self.count(seen + gone + [True] * 45 + gone), 2)      # 1.5초 보인 뒤 다시 사라짐
+
+    def test_missing_from_start_counts_once(self):
+        self.assertEqual(self.count([False] * 30 + [True] * 6 + [False] * 30), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

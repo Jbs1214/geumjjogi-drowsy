@@ -32,6 +32,28 @@ CONSTRAINTS = {"video": {"width": 640, "height": 480, "frameRate": {"ideal": 30}
 STAGE_NAMES = ("정상", "주의", "졸음")
 
 
+class UnknownStarts:
+    """판정 로그의 "판정 불가" 시작 이벤트. 얼굴이 UNKNOWN_EVENT_GAP_SEC 이상 보였다가 사라질 때만 새로 센다(기술서 6.2).
+    얼굴이 잠깐씩 보였다 안 보였다 하는 장면을 한 번으로 묶는다. 운전 시작부터 얼굴이 안 보이면 첫 프레임에서 한 번 센다."""
+
+    def __init__(self) -> None:
+        self._seen_since: float | None = None      # 얼굴이 이어서 보이기 시작한 시각
+        self._was_found, self._first = True, True
+
+    def update(self, t: float, found: bool) -> bool:
+        """프레임 시각과 얼굴 검출 여부 → 이 프레임에서 판정 불가 이벤트를 새로 남기는지."""
+        from rule_based.config import UNKNOWN_EVENT_GAP_SEC
+
+        if found:
+            if not self._was_found or self._seen_since is None:
+                self._seen_since = t
+            self._was_found, self._first = True, False
+            return False
+        started = self._was_found and (self._first or (self._seen_since is not None and t - self._seen_since >= UNKNOWN_EVENT_GAP_SEC - 1e-9))
+        self._was_found, self._first = False, False
+        return started
+
+
 class LiveSession:
     """프레임 하나를 추출 → 판정까지 처리한다(영상에는 그리지 않는다). 콜백 스레드와 화면 스레드가 같이 쓰므로 잠금을 건다.
     운전 한 번 = reset()부터 finish()까지. finish() 뒤에 들어오는 프레임은 버리고, 다음 운전은 reset()으로 새로 시작한다.
@@ -69,7 +91,7 @@ class LiveSession:
             self.stamps: list[float] = []
             self.ear = self.mar = np.nan
             self.log: list[dict] = []               # 판정 로그(기술서 6.2), 프레임마다 한 행
-            self._logged, self._was_found, self._carrying = 0, True, False
+            self._logged, self._unknown, self._carrying = 0, UnknownStarts(), False
             self.finished: dict | None = None       # finish()가 저장한 마지막 기록. 있으면 운전이 끝난 상태다
         if self.beeper:
             self.beeper.set(False)
@@ -109,12 +131,12 @@ class LiveSession:
         j, r = self.judge, self.rule
         kinds = [e.kind for e in j.events[self._logged:]]
         self._logged = len(j.events)
-        if self._was_found and not found:
+        if self._unknown.update(t, found):
             kinds.append("판정 불가")
         carrying = ((not found) or r.head_down) and r.closed_sec > 0
         if carrying and not self._carrying:
             kinds.append("이어받기")
-        self._was_found, self._carrying = found, carrying
+        self._carrying = carrying
         probs = j.probs if j.probs is not None else np.full(len(config.CLASSES), np.nan)
         self.log.append({"wall_time": datetime.now().isoformat(timespec="milliseconds"), "video_t": round(t, 3),
                          "stage": STAGE_NAMES[alarm_stage(j, r)], "closed_sec": round(r.closed_sec if j.final else j.closed_sec, 3),
