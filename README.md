@@ -131,7 +131,8 @@ python -m eval.score_user --set webcam --tags v7
 # 8. 데모
 python -m demo.webcam --camera 0                        # OpenCV 실시간 (영상 저장 안 함)
 python -m demo.demo_video --input <영상> --weights runs/v7/cnn1d_v01.pt   # 판정 화면을 입힌 데모 영상
-python -m streamlit run demo/streamlit_app.py           # Streamlit 데모 (http://127.0.0.1:8501). 운전하기(계기판·운전 후 리포트), 지난 운전(runs/sessions/*_log.csv)
+python -m streamlit run demo/streamlit_app.py           # Streamlit 데모 (http://127.0.0.1:8501). 운전하기(계기판·운전 후 리포트), 지난 운전(runs/sessions/*_log.csv), 관람(/watch)
+# 같은 네트워크의 다른 PC에서 관람: --server.address 0.0.0.0 로 켜고 http://<발표자 PC IP>:8501/watch 접속(관람은 카메라를 쓰지 않음). 발표자는 http://localhost:8501
 
 # 테스트
 python -m unittest discover -t . -s tests
