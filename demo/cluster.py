@@ -54,9 +54,12 @@ CSS = """
 .gj-card-value .gj-display { font-size: 2.3rem; line-height: 1.1; color: var(--gj-text); }
 .gj-card-value small { color: var(--gj-muted); font-size: .95rem; }
 .gj-card-note { color: var(--gj-muted); font-size: .78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.gj-callout { background: rgba(242, 201, 76, .12); border: 1px solid rgba(242, 201, 76, .45); border-radius: 14px; padding: 14px 16px;
-  color: var(--gj-text); font-size: .95rem; line-height: 1.55; display: flex; align-items: center; }
-.gj-callout b { color: #F2C94C; }
+.gj-callout { background: rgba(242, 201, 76, .12); border: 1px solid rgba(242, 201, 76, .45); border-radius: 14px; padding: 14px 18px;
+  color: var(--gj-text); font-size: .92rem; line-height: 1.5; display: flex; flex-direction: column; justify-content: center; gap: 2px; }
+.gj-callout-title { color: var(--gj-muted); font-size: .82rem; }
+.gj-callout-time { font-family: 'Black Han Sans', 'Malgun Gothic', sans-serif; font-size: 1.55rem; line-height: 1.25; color: #F2C94C;
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+.gj-head, .gj-sub, .gj-card, .gj-callout, .gj-panel-title, .gj-panel-sub { word-break: keep-all; overflow-wrap: break-word; }
 .gj-panel-title { font-weight: 700; font-size: 1.05rem; color: var(--gj-text); }
 .gj-panel-sub { color: var(--gj-muted); font-size: .82rem; margin: 2px 0 6px; }
 @media (max-width: 900px) { .gj-cards, .gj-cards-bottom { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

@@ -21,7 +21,7 @@ import pandas as pd
 
 import config
 from rule_based.alarm import DROWSY, NORMAL, WARN
-from rule_based.alerts import MouthClosedWatch, YawnTracker, summary_markdown
+from rule_based.alerts import Event, MouthClosedWatch, YawnTracker, summary_markdown
 
 REFRESH_SEC = 0.1            # 계기판을 다시 그리는 간격(초). 길면 계기판이 영상보다 늦어 보인다
 CHART_SEC = 2.0             # 실시간 그래프를 다시 그리는 간격(초). 깜빡임을 줄이려고 계기판보다 드물게 그린다
@@ -155,7 +155,10 @@ class LiveSession:
         if self.beeper:
             self.beeper.set(False)
         if snap["seconds"] > 0:
-            text = summary_markdown(snap["events"], snap["seconds"], f"운전 후 요약 ({time.strftime('%Y-%m-%d %H:%M')}, Streamlit 데모)")
+            # 얼굴 인식기 시각은 운전이 바뀌어도 이어지므로, 요약의 이벤트 시각은 이번 운전 시작(로그 첫 행)부터 센다
+            t0 = float(log["video_t"].iloc[0]) if len(log) else 0.0
+            events = [Event(e.t - t0, e.kind) for e in snap["events"]]
+            text = summary_markdown(events, snap["seconds"], f"운전 후 요약 ({time.strftime('%Y-%m-%d %H:%M')}, Streamlit 데모)")
             stem = f"{time.strftime('%Y%m%d_%H%M%S')}_streamlit"
             out = config.RUNS / "sessions" / f"{stem}.md"
             out.parent.mkdir(parents=True, exist_ok=True)

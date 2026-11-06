@@ -132,19 +132,20 @@ def card(label: str, value: str, unit: str, note: str, dot: str | None = None) -
             f'<div class="gj-card-note">{escape(note)}</div></div>')
 
 
-def peak_text(s: dict) -> str:
-    """경고가 몰린 시간대 안내 한 줄 (팀장 피드백 11.06)."""
+def peak_html(s: dict) -> str:
+    """경고가 가장 많았던 시간대 안내 칸 (팀장 피드백 11.06). 제목 → 시각(큰 글씨) → 설명, 세 줄로 나눠 보여 준다."""
+    title = '<div class="gj-callout-title">경고가 가장 많았던 시간대</div>'
     if not s["alerts"]:
-        return "주의·졸음 경고가 한 번도 없었습니다."
+        return title + "<div>주의·졸음 경고가 한 번도 없었습니다.</div>"
     if s["n_buckets"] == 1:
-        return (f"운전이 {config.SUMMARY_BUCKET_SEC / 60:g}분보다 짧아 시간대를 나누지 않았습니다. "
-                f"주의 {s['warn']}회, 졸음 {s['drowsy']}회가 있었습니다.")
+        return title + (f"<div>운전이 {config.SUMMARY_BUCKET_SEC / 60:g}분보다 짧아 시간대를 나누지 않았습니다. "
+                        f"주의 {s['warn']}회, 졸음 {s['drowsy']}회가 있었습니다.</div>")
     a, b = s["peak_range"]
+    time = f'<div class="gj-callout-time">{a} ~ {b}</div>'
     if s["alerts"] == 1:
-        return f"주의·졸음 경고는 <b>{a}~{b}</b> 구간에 한 번 있었습니다."
+        return title + time + "<div>주의·졸음 경고가 이 시간대에 한 번 있었습니다.</div>"
     share = s["peak_count"] / s["alerts"]
-    return (f"주의·졸음 경고 {s['alerts']}건 중 {s['peak_count']}건({share:.0%})이 <b>{a}~{b}</b>에 몰려 있습니다. "
-            "이 시간대 앞에서 쉬어 가는 것이 좋습니다.")
+    return title + time + f"<div>주의·졸음 {s['alerts']}건 중 {s['peak_count']}건({share:.0%}). 이 시간대 전에 쉬어 가세요.</div>"
 
 
 def show_report(st, log: pd.DataFrame, note: str = "", empty: str = "판정 기록이 없습니다.") -> None:
@@ -185,7 +186,7 @@ def show_report(st, log: pd.DataFrame, note: str = "", empty: str = "판정 기�
                 + card("고개 숙임", str(s["head"]), "회", head)
                 + card("확인 필요", str(s["check"]), "회", f"판정 불가·고개 숙임 {UNKNOWN_ALERT_SEC:g}초", KIND_COLORS["확인 필요"])
                 + card("이어받기", str(s["carry"]), "회", "눈 감은 채 고개 숙임·미검출")
-                + f'<div class="gj-callout">{peak_text(s)}</div></div>', unsafe_allow_html=True)
+                + f'<div class="gj-callout">{peak_html(s)}</div></div>', unsafe_allow_html=True)
 
     with st.expander(f"이벤트 {len(s['events'])}개를 표로 보기"):
         table = s["events"].assign(시각=s["events"]["t"].map(s["clock"])).rename(columns={"kind": "이벤트"})[["시각", "이벤트"]]
