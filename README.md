@@ -132,7 +132,7 @@ python -m eval.score_user --set webcam --tags v7
 # 8. 데모
 python -m demo.webcam --camera 0                        # OpenCV 실시간 (영상 저장 안 함)
 python -m demo.demo_video --input <영상> --weights runs/v7/cnn1d_v01.pt   # 판정 화면을 입힌 데모 영상
-python -m streamlit run demo/streamlit_app.py           # Streamlit 데모 (http://127.0.0.1:8501)
+python -m streamlit run demo/streamlit_app.py           # Streamlit 데모 (http://127.0.0.1:8501). 운전하기(계기판·운전 후 리포트), 지난 운전(runs/sessions/*_log.csv)
 
 # 테스트
 python -m unittest discover -t . -s tests
@@ -149,7 +149,7 @@ python -m unittest discover -t . -s tests
 | `rule_based/` | 눈 감김 타이머, 하품·고개 숙임 규칙, 하품 5분 3회·판정 불가 경고, 운전 후 요약 | `alarm.py`, `alerts.py`, `eyes.py`, `yawn.py`, `head.py`, `config.py` |
 | `sequence_model/` | 3초 창·4클래스 정답, 1D-CNN·LSTM 학습, 후처리 | `build_windows.py`, `models.py`, `train.py`, `postprocess.py` |
 | `eval/` | 구간·경고 지표, Val·웹캠 채점, 규칙 대 학습 비교표 | `metrics.py`, `evaluate.py`, `score_user.py`, `report.py` |
-| `demo/` | OpenCV 웹캠, 데모 영상, Streamlit 데모 | `webcam.py`, `demo_video.py`, `cfr.py`, `streamlit_app.py`, `charts.py` |
+| `demo/` | OpenCV 웹캠, 데모 영상, Streamlit 데모 | `webcam.py`, `demo_video.py`, `cfr.py`, `streamlit_app.py`, `charts.py`, `cluster.py`(계기판), `report.py`(운전 후 리포트) |
 | `tests/` | 파이프라인 테스트 45개 | `test_v3.py` |
 
 ## ✅ 평가
