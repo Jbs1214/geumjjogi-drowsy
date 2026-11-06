@@ -7,7 +7,7 @@
 import altair as alt
 import pandas as pd
 
-from config import GAUGE_MAX_SEC, SUMMARY_BUCKET_SEC
+from config import GAUGE_MAX_SEC
 from rule_based.config import ALERT_SEC, WARN_SEC
 
 LINE = "#3987e5"            # 범주 1번 (어두운 화면용)
@@ -37,7 +37,9 @@ def closure_chart(frame: pd.DataFrame, duration: float) -> alt.LayerChart:
     rule = alt.Chart(rules).mark_rule(strokeDash=[4, 4], strokeWidth=1).encode(
         y="기준:Q", color=alt.Color("이름:N", scale=alt.Scale(domain=list(rules["이름"]), range=[KIND_COLORS["주의"], KIND_COLORS["졸음"]]),
                                     legend=None))
-    label = alt.Chart(rules).mark_text(align="left", dx=4, dy=-6).encode(x=alt.value(0), y="기준:Q", text="이름:N")
+    label = alt.Chart(rules).mark_text(align="left", dx=4, dy=-7, fontSize=11).encode(
+        x=alt.value(0), y="기준:Q", text="이름:N",
+        color=alt.Color("이름:N", scale=alt.Scale(domain=list(rules["이름"]), range=[KIND_COLORS["주의"], KIND_COLORS["졸음"]]), legend=None))
     near = alt.selection_point(nearest=True, on="pointerover", fields=["시각"], empty=False)
     hover = alt.Chart(frame).mark_rule(strokeWidth=1, opacity=0.6).encode(
         x="시각:Q", opacity=alt.condition(near, alt.value(0.6), alt.value(0)),
@@ -75,32 +77,55 @@ def closure_episodes(frame: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["시작", "길이", "단계"])
 
 
-def episode_chart(episodes: pd.DataFrame, duration: float) -> alt.LayerChart:
-    """이벤트별 눈 감김 길이 막대 + 주의·졸음 기준선."""
-    x = alt.X("시작:Q", title="시작 후 초", scale=alt.Scale(domain=[0, max(duration, 10.0)]))
-    top = max(GAUGE_MAX_SEC, float(episodes["길이"].max()) + 0.5 if len(episodes) else GAUGE_MAX_SEC)
-    color = alt.Color("단계:N", scale=alt.Scale(domain=["주의", "졸음"], range=[KIND_COLORS["주의"], KIND_COLORS["졸음"]]), legend=None)
-    bars = alt.Chart(episodes).mark_bar(size=7, cornerRadiusTopLeft=2, cornerRadiusTopRight=2).encode(
-        x=x, y=alt.Y("길이:Q", title="눈 감김 길이 (초)", scale=alt.Scale(domain=[0, top])), color=color,
-        tooltip=[alt.Tooltip("시작:Q", title="시작 후 초"), alt.Tooltip("길이:Q", title="길이(초)"), alt.Tooltip("단계:N")])
-    rules = pd.DataFrame({"기준": [WARN_SEC, ALERT_SEC]})
-    rule = alt.Chart(rules).mark_rule(strokeDash=[4, 4], strokeWidth=1, color="#99A2AD").encode(y="기준:Q")
-    return alt.layer(bars, rule).properties(height=200, title="눈 감김 한 번마다 길이")
+MUTED, GRID = "#99A2AD", "#3B424C"      # 어두운 화면의 보조 글씨·격자 색 (demo/cluster.py와 같다)
+STAGE_SCALE = alt.Scale(domain=["주의", "졸음"], range=[KIND_COLORS["주의"], KIND_COLORS["졸음"]])
 
 
-def bucket_chart(events: pd.DataFrame, duration: float) -> alt.Chart:
-    """SUMMARY_BUCKET_SEC(5분) 구간별 이벤트 수 (종류별로 쌓은 막대)."""
-    n = max(int(duration // SUMMARY_BUCKET_SEC) + 1, 1)
-    names = [f"{i * SUMMARY_BUCKET_SEC / 60:g}~{(i + 1) * SUMMARY_BUCKET_SEC / 60:g}분" for i in range(n)]
-    which = (events["시각"] // SUMMARY_BUCKET_SEC).astype(int).clip(upper=n - 1) if len(events) else pd.Series(dtype=int)
-    frame = pd.DataFrame([(names[b], kind, int(((which == b) & (events["이벤트"] == kind)).sum()) if len(events) else 0)
-                          for b in range(n) for kind in KINDS], columns=["구간", "이벤트", "횟수"])
-    color = alt.Color("이벤트:N", scale=alt.Scale(domain=list(KINDS), range=[KIND_COLORS[k] for k in KINDS]),
-                      legend=alt.Legend(orient="top", title=None))
-    return (alt.Chart(frame).mark_bar(width=alt.RelativeBandSize(0.5)).encode(x=alt.X("구간:N", title=None, sort=names, axis=alt.Axis(labelAngle=0)),
-                                               y=alt.Y("횟수:Q", title="이벤트 수", axis=alt.Axis(tickMinStep=1)), color=color,
-                                               order=alt.Order("이벤트:N"), tooltip=["구간:N", "이벤트:N", "횟수:Q"])
-            .properties(height=200, title="5분 구간별 이벤트 수"))
+def report_style(chart):
+    """운전 후 리포트 그래프의 공통 모양: 제목 없음(제목은 화면 글씨로 둔다), 흐린 축 글씨, 테두리 없음, 투명 배경."""
+    return (chart.configure(background="transparent")
+            .configure_view(stroke=None)
+            .configure_axis(labelColor=MUTED, titleColor=MUTED, gridColor=GRID, domainColor=GRID, tickColor=GRID,
+                            labelFontSize=12, titleFontSize=12, titleFontWeight="normal")
+            .configure_legend(labelColor=MUTED, labelFontSize=12, symbolType="square"))
+
+
+def episode_chart(episodes: pd.DataFrame) -> alt.LayerChart:
+    """눈 감김 한 번마다 가로 막대(기술서 6.3). episodes 열: 시각(라벨), 시작, 길이, 단계. 주의·졸음 기준선과 막대 끝 값 표시."""
+    top = max(GAUGE_MAX_SEC, float(episodes["길이"].max()) + 0.6 if len(episodes) else GAUGE_MAX_SEC)
+    x = alt.X("길이:Q", title="연속 눈 감김 (초)", scale=alt.Scale(domain=[0, top], nice=False), axis=alt.Axis(tickMinStep=1))
+    y = alt.Y("시각:N", title=None, sort=alt.SortField("시작"), axis=alt.Axis(labelPadding=8, ticks=False, domain=False))
+    base = alt.Chart(episodes).encode(y=y)
+    track = base.mark_bar(color="#2F353E", size=16, cornerRadius=3).encode(
+        x=alt.X("끝:Q", title="연속 눈 감김 (초)", scale=alt.Scale(domain=[0, top], nice=False))).transform_calculate(끝=f"{top}")
+    bars = base.mark_bar(size=16, cornerRadius=3).encode(
+        x=x, color=alt.Color("단계:N", scale=STAGE_SCALE, legend=None),
+        tooltip=[alt.Tooltip("시각:N", title="시작"), alt.Tooltip("길이:Q", title="길이(초)", format=".1f"), alt.Tooltip("단계:N")])
+    values = base.mark_text(align="left", dx=6, fontSize=12, fontWeight=600, color="#E6E8EB").encode(
+        x="길이:Q", text=alt.Text("길이:Q", format=".1f"))
+    rules = pd.DataFrame({"기준": [WARN_SEC, ALERT_SEC], "이름": [f"주의 {WARN_SEC:g}초", f"졸음 {ALERT_SEC:g}초"], "단계": ["주의", "졸음"]})
+    rule = alt.Chart(rules).mark_rule(strokeDash=[4, 4], strokeWidth=1).encode(x="기준:Q", color=alt.Color("단계:N", scale=STAGE_SCALE, legend=None))
+    names = alt.Chart(rules).mark_text(dy=-10, fontSize=11, fontWeight=600).encode(
+        x="기준:Q", y=alt.value(0), text="이름:N", color=alt.Color("단계:N", scale=STAGE_SCALE, legend=None))
+    return alt.layer(track, bars, values, rule, names).properties(height=max(120, 34 * len(episodes)), padding={"top": 18})
+
+
+def bucket_chart(buckets: pd.DataFrame) -> alt.LayerChart:
+    """SUMMARY_BUCKET_SEC(5분) 구간별 주의·졸음 수를 쌓은 막대(기술서 6.3). buckets 열: 구간(라벨), 순서, 단계, 횟수.
+    가장 많이 몰린 구간은 뒤에 옅은 띠와 'n건 집중' 글씨로 표시한다."""
+    order = list(buckets.drop_duplicates("구간").sort_values("순서")["구간"])
+    x = alt.X("구간:N", title=None, sort=order, axis=alt.Axis(labelAngle=0, labelPadding=6, ticks=False))
+    total = buckets.groupby("구간", as_index=False)["횟수"].sum()
+    peak = total[total["횟수"] == total["횟수"].max()] if total["횟수"].max() > 0 else total.iloc[0:0]
+    top = max(2, int(total["횟수"].max()) + 1)
+    band = alt.Chart(peak.assign(끝=top)).mark_bar(color="#F2C94C", opacity=0.14, width=alt.RelativeBandSize(0.9)).encode(x=x, y="끝:Q")
+    bars = alt.Chart(buckets).mark_bar(width=alt.RelativeBandSize(0.45), cornerRadiusTopLeft=2, cornerRadiusTopRight=2).encode(
+        x=x, y=alt.Y("횟수:Q", title="경고 수", scale=alt.Scale(domain=[0, top]), axis=alt.Axis(tickMinStep=1)),
+        color=alt.Color("단계:N", scale=STAGE_SCALE, legend=alt.Legend(orient="bottom", title=None)),
+        order=alt.Order("단계:N", sort="descending"), tooltip=["구간:N", "단계:N", "횟수:Q"])
+    note = alt.Chart(peak.assign(끝=top, 글=peak["횟수"].map(lambda n: f"{n}건 집중"))).mark_text(
+        dy=-8, fontSize=12, fontWeight=700, color="#F2C94C").encode(x=x, y="끝:Q", text="글:N")
+    return alt.layer(band, bars, note).properties(height=260)
 
 
 def counts(frame: pd.DataFrame) -> dict[str, int]:

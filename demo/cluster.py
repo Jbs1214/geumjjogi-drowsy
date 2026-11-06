@@ -12,7 +12,7 @@ from rule_based.config import ALERT_SEC, UNKNOWN_ALERT_SEC, WARN_SEC, YAWN_REPEA
 STAGE_COLORS = ("#36BFAE", KIND_COLORS["주의"], KIND_COLORS["졸음"])     # 정상은 계기판에만 쓰는 청록
 LAMP_COLORS = {kind: KIND_COLORS[kind] for kind in ("주의", "졸음", "하품 주의", "확인 필요")}
 LAMP_NOTES = {"주의": f"눈 감김 {WARN_SEC:g}초", "졸음": f"눈 감김 {ALERT_SEC:g}초",
-              "하품 주의": f"{YAWN_REPEAT_WINDOW_SEC / 60:g}분에 {YAWN_REPEAT}회", "확인 필요": f"고개 숙임·미검출 {UNKNOWN_ALERT_SEC:g}초"}
+              "하품 주의": f"{YAWN_REPEAT_WINDOW_SEC / 60:g}분에 {YAWN_REPEAT}회", "확인 필요": f"판정 불가·고개 숙임 {UNKNOWN_ALERT_SEC:g}초"}
 ALARM_HTML = '<div class="gj-alarm"></div>'     # 졸음 단계 동안 화면 테두리를 깜빡인다. 바뀔 때만 따로 그려야 효과가 끊기지 않는다
 
 CSS = """
@@ -45,6 +45,21 @@ CSS = """
 .gj-sub { color: var(--gj-muted); margin: 0 0 18px; }
 .gj-fact { display: flex; align-items: baseline; gap: 12px; margin: 4px 0 18px; }
 .gj-fact .gj-display { font-size: 2.2rem; }
+.gj-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 0 0 16px; }
+.gj-cards-bottom { grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 1.6fr); margin: 16px 0; }
+.gj-card { background: var(--gj-panel); border: 1px solid var(--gj-line); border-radius: 14px; padding: 14px 16px 12px; min-width: 0; }
+.gj-card-label { color: var(--gj-muted); font-size: .88rem; display: flex; align-items: center; gap: 7px; }
+.gj-card-label i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
+.gj-card-value { display: flex; align-items: baseline; gap: 4px; margin: 6px 0 2px; }
+.gj-card-value .gj-display { font-size: 2.3rem; line-height: 1.1; color: var(--gj-text); }
+.gj-card-value small { color: var(--gj-muted); font-size: .95rem; }
+.gj-card-note { color: var(--gj-muted); font-size: .78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gj-callout { background: rgba(242, 201, 76, .12); border: 1px solid rgba(242, 201, 76, .45); border-radius: 14px; padding: 14px 16px;
+  color: var(--gj-text); font-size: .95rem; line-height: 1.55; display: flex; align-items: center; }
+.gj-callout b { color: #F2C94C; }
+.gj-panel-title { font-weight: 700; font-size: 1.05rem; color: var(--gj-text); }
+.gj-panel-sub { color: var(--gj-muted); font-size: .82rem; margin: 2px 0 6px; }
+@media (max-width: 900px) { .gj-cards, .gj-cards-bottom { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 640px) { .gj-lamps { grid-template-columns: repeat(2, minmax(0, 1fr)); } .gj-read { grid-template-columns: 1fr; } }
 @media (prefers-reduced-motion: reduce) { .gj-alarm { animation: none; } .gj-lamp, .gj-stage { transition: none; } }
 </style>

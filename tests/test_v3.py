@@ -454,6 +454,44 @@ class YawnModelTest(unittest.TestCase):
             rule.update(i / 25, True, 0.1)
         self.assertEqual([e.kind for e in judge.events], ["주의", "졸음"])
 
+    def test_final_check_needed_from_rule(self):
+        """최종 구성의 확인 필요(기술서 3.3): 눈 뜬 채 고개 숙임·얼굴 미검출 3초면 켜지고, 눈 감김을 이어받는 중이면 켜지지 않는다."""
+        from demo.webcam import LiveJudge, LiveRule, check_active
+
+        def run(frames):
+            judge = LiveJudge(self.Normal(), yawn_predictor=self.EndJaw())
+            rule = LiveRule(judge.events)
+            for i, (found, ear, pitch) in enumerate(frames):
+                rule.update(i / 25, found, ear, pitch, ear, ear)
+            return judge, rule
+
+        front = [(True, 0.3, 0.0)] * 250                         # 10초 정면(정면 pitch 0도)
+        judge, rule = run(front + [(True, 0.3, 30.0)] * 100)       # 눈 뜬 채 4초 숙임
+        self.assertEqual([e.kind for e in judge.events], ["확인 필요"])
+        self.assertTrue(check_active(judge, rule))
+        judge, rule = run(front + [(False, float("nan"), float("nan"))] * 100)     # 얼굴 미검출 4초
+        self.assertEqual([e.kind for e in judge.events], ["확인 필요"])
+        judge, rule = run(front + [(True, 0.1, 0.0)] * 25 + [(True, 0.1, 30.0)] * 100)     # 1초 감은 뒤 숙임 = 이어받기
+        self.assertEqual([e.kind for e in judge.events], ["주의", "졸음"])
+        self.assertFalse(check_active(judge, rule))
+
+    def test_final_current_state_priority(self):
+        from demo.webcam import LiveJudge, LiveRule, current_state
+        judge = LiveJudge(self.Normal(), yawn_predictor=self.EndJaw())
+        rule = LiveRule(judge.events)
+        self.assertEqual(current_state(judge, rule), "준비 중")
+        judge.history.append((0.0, 0, 0, 0, 0.0))
+        rule.ready, rule.found, rule.closed_sec, rule.head_down, judge.yawning = True, False, 0.6, True, True
+        self.assertEqual(current_state(judge, rule), "판정 불가")
+        rule.found = True
+        self.assertEqual(current_state(judge, rule), "눈 감김")
+        rule.closed_sec = 0.3                                      # 깜빡임보다 짧으면 눈 감김으로 보이지 않는다
+        self.assertEqual(current_state(judge, rule), "고개 숙임")
+        rule.head_down = False
+        self.assertEqual(current_state(judge, rule), "하품 감지")
+        judge.mask = True
+        self.assertEqual(current_state(judge, rule), "정상")
+
     def test_live_matches_file_detection(self):
         from demo.webcam import LiveJudge
         from eval.evaluate import model_probs

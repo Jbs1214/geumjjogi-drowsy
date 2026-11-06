@@ -9,6 +9,7 @@ import os
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 os.environ.setdefault("GLOG_minloglevel", "2")
@@ -65,6 +66,8 @@ class LiveSession:
             self.mouth, self.yawn = MouthClosedWatch(), YawnTracker()
             self.stamps: list[float] = []
             self.ear = self.mar = np.nan
+            self.log: list[dict] = []               # 판정 로그(기술서 6.2), 프레임마다 한 행
+            self._logged, self._was_found, self._carrying = 0, True, False
             self.finished: dict | None = None       # finish()가 저장한 마지막 기록. 있으면 운전이 끝난 상태다
         if self.beeper:
             self.beeper.set(False)
@@ -75,7 +78,7 @@ class LiveSession:
             self.mask = self.judge.mask = on
 
     def process(self, frame: np.ndarray) -> None:
-        from demo.webcam import alarm_stage, frame_vector
+        from demo.webcam import alarm_stage, check_active, frame_vector
 
         now = time.perf_counter()
         self.began = self.began or now
@@ -91,14 +94,35 @@ class LiveSession:
             self.rule.update(t, found, value["ear"], value["pitch"], value["ear_l"], value["ear_r"])
             self.ear, self.mar = value["ear"], value["mar"]
             self.stamps = (self.stamps + [time.perf_counter()])[-60:]
+            self._log_frame(t, found)
             # 판정 값은 오른쪽 계기판에만 보인다. 영상 위에는 그리지 않아 운전자 얼굴을 가리지 않는다
             if self.beeper:
-                self.beeper.set(alarm_stage(self.judge, self.rule) == DROWSY or self.judge.unknown_watch.active)
+                self.beeper.set(alarm_stage(self.judge, self.rule) == DROWSY or check_active(self.judge, self.rule))
+
+    def _log_frame(self, t: float, found: bool) -> None:
+        """잠금을 잡은 상태에서 부른다. 판정 로그 한 행(기술서 6.2): 실제 시각, 영상 시각, 단계, 연속 눈 감김, 현재 상태, 4클래스 확률, 이벤트.
+        이벤트는 새 경고(주의·졸음·하품 주의·확인 필요)와 판정 불가 시작, 이어받기 시작이다."""
+        from demo.webcam import alarm_stage, current_state
+
+        j, r = self.judge, self.rule
+        kinds = [e.kind for e in j.events[self._logged:]]
+        self._logged = len(j.events)
+        if self._was_found and not found:
+            kinds.append("판정 불가")
+        carrying = ((not found) or r.head_down) and r.closed_sec > 0
+        if carrying and not self._carrying:
+            kinds.append("이어받기")
+        self._was_found, self._carrying = found, carrying
+        probs = j.probs if j.probs is not None else np.full(len(config.CLASSES), np.nan)
+        self.log.append({"wall_time": datetime.now().isoformat(timespec="milliseconds"), "video_t": round(t, 3),
+                         "stage": STAGE_NAMES[alarm_stage(j, r)], "closed_sec": round(r.closed_sec if j.final else j.closed_sec, 3),
+                         "state": current_state(j, r), **{f"p_{name}": round(float(p), 4) for name, p in zip(config.CLASSES, probs)},
+                         "event": ";".join(kinds)})
 
     def _snapshot(self, history: bool = True) -> dict:
         """잠금을 잡은 상태에서 부른다. history=False면 판정 기록·이벤트 목록을 복사하지 않는다(계기판만 그릴 때).
         최종 구성이면 경고 단계와 연속 눈 감김은 규칙 쪽 값이다(webcam.alarm_stage와 같다)."""
-        from demo.webcam import alarm_stage
+        from demo.webcam import alarm_stage, check_active, current_state
 
         j, r = self.judge, self.rule
         rate = (len(self.stamps) - 1) / (self.stamps[-1] - self.stamps[0]) if len(self.stamps) > 1 else 0.0
@@ -107,9 +131,10 @@ class LiveSession:
         records = []
         if history:
             records = [(t, -1, s, -1, closed) for t, s, closed in r.history] if j.final else list(j.history)
-        return {"state": config.CLASSES[j.shown] if j.shown >= 0 else "준비 중", "stage": STAGE_NAMES[stage], "rule_stage": STAGE_NAMES[r.stage],
-                "stage_index": stage, "yawn_alert": j.yawn_repeat.active(now), "check_alert": j.unknown_watch.active,
-                "ear": self.ear, "mar": self.mar, "rule_ready": r.ready, "final": j.final,
+        model_state = config.CLASSES[j.shown] if j.shown >= 0 else ("판정 불가" if j.history else "준비 중")
+        return {"state": current_state(j, r), "model_state": model_state, "stage": STAGE_NAMES[stage],
+                "stage_index": stage, "yawn_alert": j.yawn_repeat.active(now), "check_alert": check_active(j, r),
+                "ear": self.ear, "mar": self.mar, "final": j.final,
                 "closed_sec": r.closed_sec if j.final else j.closed_sec, "rate": rate,
                 "events": list(j.events) if history else [], "history": records,
                 "seconds": j.history[-1][0] - j.history[0][0] if j.history else 0.0}
@@ -126,6 +151,7 @@ class LiveSession:
                 return self.finished
             snap = self._snapshot()
             self.finished = snap
+            log = pd.DataFrame(self.log)
         if self.beeper:
             self.beeper.set(False)
         if snap["seconds"] > 0:
@@ -134,20 +160,8 @@ class LiveSession:
             out = config.RUNS / "sessions" / f"{stem}.md"
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(text, encoding="utf-8")
-            session_log(snap).to_csv(out.with_name(f"{stem}_log.csv"), index=False, encoding="utf-8-sig")
+            log.to_csv(out.with_name(f"{stem}_log.csv"), index=False, encoding="utf-8-sig")
         return snap
-
-
-def session_log(snap: dict) -> pd.DataFrame:
-    """판정 기록 → 판정 로그 표(지난 운전 페이지가 읽는 열: video_t, stage, closed_sec, event). 이벤트는 그 시각 이후 첫 기록 행에 ;로 붙인다."""
-    history = snap["history"]
-    times = np.array([h[0] for h in history])
-    cells = [""] * len(history)
-    for e in snap["events"]:
-        i = min(int(np.searchsorted(times, e.t)), len(history) - 1)
-        cells[i] = f"{cells[i]};{e.kind}" if cells[i] else e.kind
-    return pd.DataFrame({"video_t": np.round(times, 3), "stage": [STAGE_NAMES[h[2]] for h in history],
-                         "closed_sec": [round(h[4], 3) for h in history], "event": cells})
 
 
 def fmt(value: float, digits: int = 2) -> str:
@@ -177,8 +191,8 @@ def drive_page() -> None:
                        f"하품 {config.YAWN_WEIGHTS.parent.name}/{config.YAWN_WEIGHTS.name}")
 
     st.title("졸음 계기판")
-    st.caption("연속 눈 감김 1.5초면 주의, 3초면 졸음 경고. 하품 5분 3회면 하품 주의, 판정 불가·고개 숙임 3초면 확인 필요. "
-               "연구용 데모라 실제 운전 보조로 쓰면 안 됩니다.")
+    st.caption("연속 눈 감김 1.5초면 주의, 3초면 졸음 경고. 하품 5분 3회면 하품 주의, 판정 불가·고개 숙임(눈 감김 이어받기 아님) 3초면 확인 필요. "
+               "현재 상태는 규칙과 하품 전용 모델로 정하고, 4클래스 모델 판정은 비교용입니다. 연구용 데모라 실제 운전 보조로 쓰면 안 됩니다.")
 
     def callback(frame: av.VideoFrame) -> av.VideoFrame:
         session.process(frame.to_ndarray(format="bgr24"))
@@ -195,13 +209,13 @@ def drive_page() -> None:
     def show(snap: dict) -> None:
         stage, seconds = snap["stage_index"], snap["seconds"]
         lit = {"주의": stage == WARN, "졸음": stage == DROWSY, "하품 주의": snap["yawn_alert"], "확인 필요": snap["check_alert"]}
-        items = [("모델 판정", snap["state"]), ("규칙 경고", snap["rule_stage"] if snap["rule_ready"] else "준비 중"),
+        items = [("현재 상태", snap["state"]), ("모델 판정(비교)", snap["model_state"]),
                  ("EAR", fmt(snap["ear"])), ("MAR", fmt(snap["mar"])),
                  ("처리 속도", f"{snap['rate']:.1f} FPS"), ("운전 시간", f"{int(seconds // 60):02d}:{int(seconds % 60):02d}")]
         area.markdown(cluster_html(snap["closed_sec"], stage, snap["stage"], lit, items), unsafe_allow_html=True)
 
     def idle() -> None:
-        items = [(name, "-") for name in ("모델 판정", "규칙 경고", "EAR", "MAR", "처리 속도", "운전 시간")]
+        items = [(name, "-") for name in ("현재 상태", "모델 판정(비교)", "EAR", "MAR", "처리 속도", "운전 시간")]
         area.markdown(cluster_html(0.0, NORMAL, "대기", {}, items), unsafe_allow_html=True)
 
     if context.state.playing and session.finished is not None:     # 운전을 끝낸 뒤 카메라를 다시 켰다 = 새 운전
@@ -217,7 +231,7 @@ def drive_page() -> None:
             alarm.markdown(ALARM_HTML, unsafe_allow_html=True) if alarm_on else alarm.empty()
         if draw_chart and snap["history"]:
             chart_at = now
-            timeline, _ = live_frames(snap)
+            timeline = live_frames(snap)
             chart.altair_chart(closure_chart(timeline.iloc[::config.JUDGE_EVERY], timeline["시각"].iloc[-1]), use_container_width=True)
         time.sleep(REFRESH_SEC)
     alarm.empty()
@@ -226,7 +240,7 @@ def drive_page() -> None:
         snap = session.finish()
         chart.empty()
         st.divider()
-        show_report(st, *live_frames(snap), note="방금 끝난 운전입니다. 기록은 지난 운전에서 다시 볼 수 있습니다.")
+        show_report(st, pd.DataFrame(session.log), note="방금 끝난 운전입니다. 기록은 지난 운전에서 다시 볼 수 있습니다.")
     else:
         chart.info("카메라 켜기를 누르면 브라우저가 카메라 권한을 묻습니다. 영상은 이 PC 밖으로 나가지 않고 저장되지도 않습니다.")
 
@@ -235,7 +249,7 @@ def history_page() -> None:
     """지난 운전: runs/sessions/의 판정 로그를 골라 같은 리포트로 본다."""
     import streamlit as st
 
-    from demo.report import log_frames, log_label, log_title, session_logs, show_report
+    from demo.report import load_log, log_label, log_title, session_logs, show_report
 
     st.title("지난 운전")
     logs = session_logs()
@@ -243,7 +257,7 @@ def history_page() -> None:
         st.info("저장된 운전 기록이 없습니다. 운전하기에서 운전을 한 번 끝내면 여기에 쌓입니다.")
         return
     path = st.selectbox("운전 기록", logs, format_func=log_label, help="판정 로그(_log.csv)가 있는 기록만 보입니다")
-    show_report(st, *log_frames(path), note=log_title(path))
+    show_report(st, load_log(path), note=log_title(path))
 
 
 def main() -> None:
