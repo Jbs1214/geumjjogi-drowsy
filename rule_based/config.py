@@ -27,15 +27,3 @@ YAWN_MIN_SEC = 1.0      # 입 벌림이 이 시간(초) 이상 이어지면 하�
 PITCH_DOWN_RELATIVE = 17.5  # 정면 pitch보다 이만큼(도) 이상 숙이면 고개 숙임 (숙이면 +). 기술서 3.3
 PITCH_DOWN_ABSOLUTE = 25.0  # 정면 pitch가 아직 없을 때의 고개 숙임 기준(도)
 FRONT_PITCH_SEC = 60.0      # 세션 시작부터 이 시간 안의 눈 뜬 프레임으로 정면 pitch를 구한다
-
-WINDOW_SEC = 30         # PERCLOS 이동창 길이(초). 기획서 3-2의 웹캠 판정 30~60초. 모델의 2초 창과는 별개다
-
-# 졸음 점수 = 100 × Σ 가중치 × 지표(0~1). 지표는 아래 값에서 1.0이 되고 그 위는 1.0으로 자른다
-PERCLOS_FULL = 0.5      # PERCLOS
-CLOSURE_FULL_SEC = 3.0  # 가장 긴 눈 감김(초)
-YAWN_FULL = 1           # 하품 횟수
-                        # 고개 숙임 비율은 원래 0~1이라 그대로 쓴다
-WEIGHTS = {"perclos": 0.25, "closure": 0.25, "yawn": 0.25, "head_down": 0.25}  # 합 1. 일단 모두 같게
-
-STAGE_WARN = 40         # 점수가 이 이상이면 주의
-STAGE_DROWSY = 70       # 점수가 이 이상이면 졸음
